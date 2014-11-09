@@ -974,10 +974,12 @@ int mainloop(void)
 {
 	SDL_Event ev;
 	mat4 cam;
+	vec4 gravity;
 
 	lvroot = level_load("level.txt");
 	level *lv = lvroot;
 
+	gravity.m = _mm_setzero_ps();
 	mat4_iden(&cam);
 	cam.v.w.v.x = 0.5f + lv->sx;
 	cam.v.w.v.y = 0.5f;
@@ -1120,6 +1122,16 @@ int mainloop(void)
 
 			if(celltype_is_solid(lv, c, oldcell, py1))
 				cam.v.w.v.z = cz1 + 0.5f + (0.5f-PLAYER_BBOX)*gz1;
+		}
+
+		// Apply gravity
+		cam.v.w.m = _mm_add_ps(cam.v.w.m, gravity.m);
+		gravity.v.y -= 3.0f*tdiff*tdiff;
+
+		if(cam.v.w.v.y < 0.4f)
+		{
+			cam.v.w.v.y = 0.4f;
+			gravity.v.y = 0.0f;
 		}
 
 		// Get new cell
