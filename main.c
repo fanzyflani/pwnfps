@@ -156,12 +156,16 @@ void mat4_roty(mat4 *A, float ang)
 	A->v.z.v.z = vc*vzz - vs*vzx;
 }
 
-static int celltype_is_solid(level *lv, char c)
+static int celltype_is_solid(level *lv, char c, char oldcell, float y)
 {
-	if(c == ';' || c == '$' || c == '"' || c == '#')
-		return 0;
+	if(c == '"' && oldcell == '#')
+		return y < 1.0f || y >= 2.0f;
+	if(c == '#')
+		return y < 0.0f || y >= 2.0f;
+	if(c == ';' || c == '$' || c == '"')
+		return y < 0.0f || y >= 1.0f;
 	if(c == '>' || c == '<' || c == '^' || c == ',')
-		return 0;
+		return y < 0.0f || y >= 1.0f;
 	if(c >= 'A' && c <= 'Z')
 		return lv->pmap[c - 'A'].x2 != -1 ? 0 : 1;
 	
@@ -1082,6 +1086,7 @@ int mainloop(void)
 		int bcx = (int)bx1;
 		int bcy = (int)by1;
 		int bcz = (int)bz1;
+		char oldcell = get_cell(lv, cx1, cz1);
 
 		if(cx1 != bcx && cz1 != bcz)
 		{
@@ -1089,9 +1094,9 @@ int mainloop(void)
 			char cellz = get_cell(lv, cx1, bcz);
 			char cellc = get_cell(lv, bcx, bcz);
 
-			int solx = celltype_is_solid(lv, cellx);
-			int solz = celltype_is_solid(lv, cellz);
-			int solc = celltype_is_solid(lv, cellc);
+			int solx = celltype_is_solid(lv, cellx, oldcell, py1);
+			int solz = celltype_is_solid(lv, cellz, oldcell, py1);
+			int solc = celltype_is_solid(lv, cellc, oldcell, py1);
 
 			if(solx && solz)
 			{
@@ -1108,12 +1113,12 @@ int mainloop(void)
 		} else if(cx1 != bcx) {
 			char c = get_cell(lv, bcx, bcz);
 
-			if(celltype_is_solid(lv, c))
+			if(celltype_is_solid(lv, c, oldcell, py1))
 				cam.v.w.v.x = cx1 + 0.5f + (0.5f-PLAYER_BBOX)*gx1;
 		} else if(cz1 != bcz) {
 			char c = get_cell(lv, bcx, bcz);
 
-			if(celltype_is_solid(lv, c))
+			if(celltype_is_solid(lv, c, oldcell, py1))
 				cam.v.w.v.z = cz1 + 0.5f + (0.5f-PLAYER_BBOX)*gz1;
 		}
 
