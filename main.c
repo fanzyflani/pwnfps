@@ -79,7 +79,26 @@ int rscale = DEF_SCALE;
 
 SDL_Surface *screen = NULL;
 uint32_t *sbuf = NULL;
+uint32_t *tsbuf = NULL;
+float *zbuf = NULL;
 level *lvroot = NULL;
+
+uint32_t randi(uint32_t *seed)
+{
+	*seed = (*seed * 25739) + 4;
+	*seed &= 0x7FFFFFFF;
+	return *seed;
+}
+
+float randfu(uint32_t *seed)
+{
+	return (randi(seed)) % 3759 / 3759.0f;
+}
+
+float randfs(uint32_t *seed)
+{
+	return (randfu(seed)) * 2.0f - 1.0f;
+}
 
 __m128 v_normalise(__m128 v)
 {
@@ -147,7 +166,7 @@ int celltype_is_solid(char c)
 	return 1;
 }
 
-int celltype_is_free(char c)
+static int celltype_is_free(char c)
 {
 	if(c == ';' || c == '$' || c == '"')
 		return 1;
@@ -159,7 +178,7 @@ int celltype_is_free(char c)
 	return 0;
 }
 
-int find_free_dir_2d(level *lv, int x, int z)
+static int find_free_dir_2d(level *lv, int x, int z)
 {
 	if(celltype_is_free(lv->data[lv->w*z + x+1])) return FXP;
 	if(celltype_is_free(lv->data[lv->w*(z+1)+x])) return FZP;
@@ -170,9 +189,13 @@ int find_free_dir_2d(level *lv, int x, int z)
 	return FXP; // stuff it
 }
 
-void trace_hit_wall(level *lv, const vec4 *ifrom, const vec4 *ipos, const vec4 *iray, int ldir, uint32_t *pixel, float *dist, __m128 col)
+static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, const vec4 *ifrom, const vec4 *iray, __m128 icol);
+
+static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *ifrom, const vec4 *ipos, const vec4 *iray, int ldir, float *dist, __m128 icol, __m128 col)
 {
 	float diffuse;
+
+	col = _mm_mul_ps(icol, col);
 
 	switch(ldir)
 	{
@@ -211,11 +234,69 @@ void trace_hit_wall(level *lv, const vec4 *ifrom, const vec4 *ipos, const vec4 *
 
 	// Return colour
 	col = _mm_mul_ps(col, _mm_set1_ps(diffuse));
-	*pixel = col_ftoint(col);
-	//*dist = cdist;
+
+	if(hitctr >= 0 && hitctr < 1)
+	{
+		vec4 ray, pos;
+		ray.m = iray->m;
+		pos.m = ipos->m;
+		switch(ldir)
+		{
+			case FXP:
+				ray.v.x = -ray.v.x;
+				pos.v.x -= 0.001f;
+				break;
+
+			case FXN:
+				ray.v.x = -ray.v.x;
+				pos.v.x += 0.001f;
+				break;
+
+			case FZP:
+				ray.v.z = -ray.v.z;
+				pos.v.z -= 0.001f;
+				break;
+
+			case FZN:
+				ray.v.z = -ray.v.z;
+				pos.v.z += 0.001f;
+				break;
+
+			case FYP:
+				ray.v.y = -ray.v.y;
+				pos.v.y -= 0.001f;
+				break;
+
+			case FYN:
+				ray.v.y = -ray.v.y;
+				pos.v.y += 0.001f;
+				break;
+
+		}
+
+		const float rblur = 0.03f;
+		ray.v.x += randfs(seed) * rblur;
+		ray.v.y += randfs(seed) * rblur;
+		randfs(seed);
+		ray.v.z += randfs(seed) * rblur;
+		randfs(seed);
+
+		float odist = *dist;
+		const float refl = 0.25f;
+		*dist = 0;
+		__m128 bcol = col;
+		col = trace_ray(hitctr+1, seed, lv, dist, &pos, &ray, col);
+		col = _mm_add_ps(
+			_mm_mul_ps(_mm_set1_ps(refl), col),
+			_mm_mul_ps(_mm_set1_ps(1.0f-refl), bcol));
+
+		*dist += odist;
+	}
+
+	return col;
 }
 
-void trace_ray_through(level *lv, int *ldir, float *cdist, vec4 *wdist, vec4 *pos, vec4 *ray, char **cell, int gx, int gy, int gz)
+static void trace_ray_through(level *lv, int *ldir, float *cdist, vec4 *wdist, vec4 *pos, vec4 *ray, char **cell, int gx, int gy, int gz)
 {
 	if(wdist->v.y < wdist->v.x && wdist->v.y < wdist->v.z)
 	{
@@ -245,7 +326,7 @@ void trace_ray_through(level *lv, int *ldir, float *cdist, vec4 *wdist, vec4 *po
 	}
 }
 
-void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const vec4 *iray)
+static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, const vec4 *ifrom, const vec4 *iray, __m128 icol)
 {
 	vec4 ray, pos;
 	vec4 iavel, avel, wdist;
@@ -253,8 +334,16 @@ void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const
 	float cdist = 0.0f;
 
 	// Copy our constant inputs
-	ray.m = v_normalise(iray->m);
+	ray.m = iray->m;
 	pos.m = ifrom->m;
+
+	// Fuzz + normalise the direction
+	/*
+	ray.v.x += randfs(seed) * 0.004f;
+	ray.v.y += randfs(seed) * 0.004f;
+	ray.v.z += randfs(seed) * 0.004f;
+	*/
+	ray.m = v_normalise(ray.m);
 
 	// Find our starting point
 	int cx = (int)ifrom->v.x;
@@ -310,11 +399,10 @@ void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const
 				if(ldir == FYN || ldir == FYP)
 				{
 					*dist = cdist;
-					trace_hit_wall(lv, ifrom, &pos, &ray, ldir, pixel, dist,
+					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
 						gy > 0 && *cell != '$'
 						? _mm_setr_ps(30.0f, 30.0f, 0.0f, 0.0f)
 						: _mm_setr_ps(1.0f, 1.0f, 1.0f, 0.0f));
-					return;
 
 				} else if(ldir == FXN || ldir == FXP) {
 					wdist.m = _mm_sub_ps(wdist.m, _mm_set1_ps(wdist.v.x));
@@ -348,11 +436,10 @@ void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const
 				if(ldir == FYN || ldir == FYP)
 				{
 					*dist = cdist;
-					trace_hit_wall(lv, ifrom, &pos, &ray, ldir, pixel, dist,
+					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
 						gy > 0
 						? _mm_setr_ps(30.0f, 30.0f, 0.0f, 0.0f)
 						: _mm_setr_ps(1.0f, 1.0f, 1.0f, 0.0f));
-					return;
 
 				} else if(ldir == FXN || ldir == FXP) {
 					wdist.m = _mm_sub_ps(wdist.m, _mm_set1_ps(wdist.v.x));
@@ -396,9 +483,9 @@ void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const
 						break;
 
 					default:
-						trace_hit_wall(lv, ifrom, &pos, &ray, ldir, pixel, dist,
-							_mm_setr_ps(1.0f, 1.0f, 2.0f, 0.0f));
-						return;
+						*dist = cdist;
+						return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
+							_mm_setr_ps(0.8f, 0.8f, 1.0f, 0.0f));
 				}
 				break;
 
@@ -407,8 +494,7 @@ void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const
 			case ',':
 			case '^': {
 				// Ramp up
-				// TODO: do a dir other than +X
-
+				// TODO: ? make this not distort from the sides?
 				// Tilt ray
 				const float ramp_delta = 0.5f;
 				switch(this_cell)
@@ -418,6 +504,7 @@ void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const
 					case ',': ray.v.y -= ramp_delta * ray.v.z; break;
 					case '^': ray.v.y += ramp_delta * ray.v.z; break;
 				}
+
 				wdist.v.y = pos.v.y;
 				if(ray.v.y >= 0.0f) wdist.v.y = 1.0f - wdist.v.y; 
 				wdist.v.y *= 1.0f / (ray.v.y < 0.0f ? -ray.v.y : ray.v.y);
@@ -427,11 +514,10 @@ void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const
 				{
 					*dist = cdist;
 					ldir = (ray.v.y < 0.0f ? FYN : FYP);
-					trace_hit_wall(lv, ifrom, &pos, &ray, ldir, pixel, dist,
+					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
 						ray.v.y >= 0.0f
 						? _mm_setr_ps(30.0f, 30.0f, 0.0f, 0.0f)
 						: _mm_setr_ps(1.0f, 1.0f, 1.0f, 0.0f));
-					return;
 
 				} else if(ldir == FXN || ldir == FXP) {
 					ldir = (ray.v.x < 0.0f ? FXN : FXP);
@@ -455,6 +541,7 @@ void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const
 					case ',': ray.v.y += ramp_delta * ray.v.z; break;
 					case '^': ray.v.y -= ramp_delta * ray.v.z; break;
 				}
+
 				wdist.v.y = pos.v.y;
 				if(ray.v.y >= 0.0f) wdist.v.y = 1.0f - wdist.v.y; 
 				wdist.v.y *= iavel.v.y;
@@ -469,9 +556,8 @@ void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const
 				{
 					// ERROR
 					*dist = cdist;
-					trace_hit_wall(lv, ifrom, &pos, &ray, ldir, pixel, dist,
+					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
 						_mm_setr_ps(0.0f, 0.0f, 5.0f, 0.0f));
-					return;
 				}
 
 				// Find out which cell we are
@@ -496,9 +582,8 @@ void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const
 				} else {
 					// ERROR
 					*dist = cdist;
-					trace_hit_wall(lv, ifrom, &pos, &ray, ldir, pixel, dist,
+					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
 						_mm_setr_ps(5.0f, 0.0f, 5.0f, 0.0f));
-					return;
 				}
 
 				float rx = pos.v.x;
@@ -593,18 +678,17 @@ void trace_ray(level *lv, uint32_t *pixel, float *dist, const vec4 *ifrom, const
 				break;
 			} else {
 				*dist = cdist;
-				trace_hit_wall(lv, ifrom, &pos, &ray, ldir, pixel, dist,
+				return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
 					ldir == FYP
 					? _mm_setr_ps(30.0f, 30.0f, 0.0f, 0.0f)
-					: _mm_setr_ps(1.0f, 1.0f, 2.0f, 0.0f));
-				return;
+					: _mm_setr_ps(0.8f, 0.8f, 1.0f, 0.0f));
 			}
 
 		}
 	}
 
 	// TODO: handle OOB properly
-	*pixel = col_ftoint(ray.m);
+	return ray.m;
 }
 
 // [p1,p2)
@@ -636,22 +720,66 @@ void trace_screen_centred(level *lv, int x1, int y1, int x2, int y2, const mat4 
 	rdy.m = _mm_mul_ps(_mm_set1_ps(ysrat), cam->v.y.m);
 
 	// Trace!
-	// (done this way just in case I ever get OpenMP working again)
-	int y;
+	// Do 32x32 tiles for improved cache coherence
+	int cy;
 #pragma omp parallel for
-	for(y = 0; y < dimy; y++)
+	for(cy = 0; cy < dimy; cy += 32)
 	{
-		int x;
-		uint32_t *p = sbuf + y*rwidth;
-		float dist = 0.0f;
-		vec4 rayl;
+		int y, cx, x;
 
-		rayl.m = _mm_add_ps(rayb.m, _mm_mul_ps(_mm_set1_ps(y), rdy.m));
-
-		for(x = 0; x < dimx; x++)
+		for(cx = 0; cx < dimx; cx += 32)
+		for(y = 0; y < 32 && y + cy < dimy; y++)
 		{
-			rayl.m = _mm_add_ps(rayl.m, rdx.m);
-			trace_ray(lv, p++, &dist, from, &rayl);
+			vec4 rayl;
+			rayl.m = _mm_add_ps(rayb.m, _mm_mul_ps(_mm_set1_ps(y+cy), rdy.m));
+			rayl.m = _mm_add_ps(rayl.m, _mm_mul_ps(_mm_set1_ps(cx), rdx.m));
+			uint32_t *p = sbuf + (y+cy)*rwidth + cx;
+			float *dist = zbuf + (y+cy)*rwidth + cx;
+			for(x = 0; x < 32 && x + cx < dimx; x++)
+			{
+				rayl.m = _mm_add_ps(rayl.m, rdx.m);
+				uint32_t seed = (x+cx) + (y+cy)*(y+cy)*(rwidth+1);
+				seed *= seed * seed;
+				seed *= seed * seed;
+				*(p++) = col_ftoint(
+					trace_ray(0, &seed, lv, dist++, from, &rayl,
+					_mm_setr_ps(1.0f, 1.0f, 1.0f, 1.0f)));
+			}
+		}
+	}
+
+	// Apply focal blur
+	// TODO: isolate this to the camera region
+	memcpy(tsbuf, sbuf, sizeof(uint32_t)*rwidth*rheight);
+
+#pragma omp parallel for
+	for(cy = 0; cy < dimy; cy++)
+	{
+		int cx, x, y;
+		int i;
+		uint32_t seed = cy*cy + 415135; // keyboard mash
+		float *dist = zbuf + cy*rwidth;
+		uint32_t *p = sbuf + cy*rwidth;
+
+		const float fstr = 0.002f * dimy;
+		const float foffs = 1.0f;
+		for(cx = 0; cx < dimx; cx++)
+		{
+			float z = (*(dist++) - foffs);
+			uint32_t acc = 0;
+
+			for(i = 0; i < 4; i++)
+			{
+				x = cx + randfs(&seed) * fstr * z;
+				y = cy + randfs(&seed) * fstr * z;
+				if(x < 0) x = 0;
+				if(y < 0) y = 0;
+				if(x >= dimx) x = dimx-1;
+				if(y >= dimy) y = dimy-1;
+				acc += (tsbuf[x + y*rwidth]>>2)&0x3F3F3F3F;
+			}
+
+			*(p++) = acc;
 		}
 	}
 }
@@ -1036,6 +1164,8 @@ int main(int argc, char *argv[])
 	SDL_WM_SetCaption("7DFPS 2014 (fanzyflani's entry)", NULL);
 	screen = SDL_SetVideoMode(DEF_WIDTH, DEF_HEIGHT, 32, 0);
 	sbuf = malloc(sizeof(uint32_t)*rwidth*rheight);
+	tsbuf = malloc(sizeof(uint32_t)*rwidth*rheight);
+	zbuf = malloc(sizeof(float)*rwidth*rheight);
 
 	return mainloop();
 }
