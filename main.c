@@ -557,7 +557,8 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 					// ERROR
 					*dist = cdist;
 					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
-						_mm_setr_ps(0.0f, 0.0f, 5.0f, 0.0f));
+						//_mm_setr_ps(0.0f, 0.0f, 5.0f, 0.0f));
+						_mm_setr_ps(0.8f, 0.8f, 1.0f, 0.0f));
 				}
 
 				// Find out which cell we are
