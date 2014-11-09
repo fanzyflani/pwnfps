@@ -1108,7 +1108,7 @@ int mainloop(void)
 			} else if(solx) {
 				cam.v.w.v.x = cx1 + 0.5f + (0.5f-PLAYER_BBOX)*gx1;
 
-			} else {
+			} else if(solz) {
 				cam.v.w.v.z = cz1 + 0.5f + (0.5f-PLAYER_BBOX)*gz1;
 
 			}
