@@ -19,6 +19,8 @@
 
 #define EPSILON 0.0000000000001f
 
+#define PLAYER_BBOX 0.2f
+
 #define DEF_SCALE 3
 #define DEF_RWIDTH 320
 #define DEF_RHEIGHT 200
@@ -154,14 +156,14 @@ void mat4_roty(mat4 *A, float ang)
 	A->v.z.v.z = vc*vzz - vs*vzx;
 }
 
-int celltype_is_solid(char c)
+static int celltype_is_solid(level *lv, char c)
 {
 	if(c == ';' || c == '$' || c == '"' || c == '#')
 		return 0;
 	if(c == '>' || c == '<' || c == '^' || c == ',')
 		return 0;
 	if(c >= 'A' && c <= 'Z')
-		return 0;
+		return lv->pmap[c - 'A'].x2 != -1 ? 0 : 1;
 	
 	return 1;
 }
@@ -187,6 +189,15 @@ static int find_free_dir_2d(level *lv, int x, int z)
 
 	printf("NOT FREE %i %i\n", x, z);
 	return FXP; // stuff it
+}
+
+static char get_cell(level *lv, int cx, int cz)
+{
+	// Clamp for safety
+	if(cx < 0 || cx >= lv->w) cx = 0;
+	if(cz < 0 || cz >= lv->h) cz = 0;
+	
+	return lv->data[cx + cz*lv->w];
 }
 
 static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, const vec4 *ifrom, const vec4 *iray, __m128 icol);
@@ -296,7 +307,7 @@ static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *
 	return col;
 }
 
-static void trace_ray_through(level *lv, int *ldir, float *cdist, vec4 *wdist, vec4 *pos, vec4 *ray, char **cell, int gx, int gy, int gz)
+static void trace_ray_through(level *lv, int *ldir, float *cdist, vec4 *wdist, vec4 *pos, vec4 *ray, int gx, int gy, int gz)
 {
 	if(wdist->v.y < wdist->v.x && wdist->v.y < wdist->v.z)
 	{
@@ -375,8 +386,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 	wdist.m = _mm_mul_ps(wdist.m, iavel.m);
 
 	// Get a pointer + the level width
-	int lpitch = lv->w;
-	char *cell = lv->data + lpitch*cz + cx;
+	char cell = get_cell(lv, cx, cz);
 
 	// Do our trace!
 	int maxsteps = 1000;
@@ -385,7 +395,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 	while(maxsteps-- > 0)
 	{
 		// Work out what to do with this cell
-		char this_cell = *cell;
+		char this_cell = cell;
 		switch(this_cell)
 		{
 			case ';':
@@ -395,29 +405,29 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				// Trace to edge
 
 				//printf("%f %f %f %f\n", wdist.v.x, wdist.v.z, iavel.v.x, iavel.v.z);
-				trace_ray_through(lv, &ldir, &cdist, &wdist, &pos, &ray, &cell, gx, gy, gz);
+				trace_ray_through(lv, &ldir, &cdist, &wdist, &pos, &ray, gx, gy, gz);
+
 				if(ldir == FYN || ldir == FYP)
 				{
 					*dist = cdist;
 					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
-						gy > 0 && *cell != '$'
+						gy > 0 && cell != '$'
 						? _mm_setr_ps(30.0f, 30.0f, 0.0f, 0.0f)
 						: _mm_setr_ps(1.0f, 1.0f, 1.0f, 0.0f));
 
 				} else if(ldir == FXN || ldir == FXP) {
 					wdist.m = _mm_sub_ps(wdist.m, _mm_set1_ps(wdist.v.x));
 					wdist.v.x = iavel.v.x;
-					cell += gx;
 					cx += gx;
 
 				} else if(ldir == FZN || ldir == FZP) {
 					wdist.m = _mm_sub_ps(wdist.m, _mm_set1_ps(wdist.v.z));
 					wdist.v.z = iavel.v.z;
-					cell += gz*lpitch;
 					cz += gz;
 				}
 
-				if(this_cell == '"' && *cell == '#')
+				cell = get_cell(lv, cx, cz);
+				if(this_cell == '"' && cell == '#')
 				{
 					pos.v.y += 1.0f;
 
@@ -432,7 +442,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				// 2-high room
 				if(gy > 0) wdist.v.y += iavel.v.y;
 
-				trace_ray_through(lv, &ldir, &cdist, &wdist, &pos, &ray, &cell, gx, gy, gz);
+				trace_ray_through(lv, &ldir, &cdist, &wdist, &pos, &ray, gx, gy, gz);
 				if(ldir == FYN || ldir == FYP)
 				{
 					*dist = cdist;
@@ -444,19 +454,18 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				} else if(ldir == FXN || ldir == FXP) {
 					wdist.m = _mm_sub_ps(wdist.m, _mm_set1_ps(wdist.v.x));
 					wdist.v.x = iavel.v.x;
-					cell += gx;
 					cx += gx;
 
 				} else if(ldir == FZN || ldir == FZP) {
 					wdist.m = _mm_sub_ps(wdist.m, _mm_set1_ps(wdist.v.z));
 					wdist.v.z = iavel.v.z;
-					cell += gz*lpitch;
 					cz += gz;
 				}
 
 				if(gy > 0) wdist.v.y -= iavel.v.y;
 
-				if(*cell == '"')
+				cell = get_cell(lv, cx, cz);
+				if(cell == '"')
 				{
 					pos.v.y -= 1.0f;
 					if(gy > 0.0f)
@@ -465,7 +474,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 						wdist.v.y -= iavel.v.y;
 				}
 
-				char xcell = *cell;
+				char xcell = cell;
 				if(xcell >= 'A' && xcell <= 'Z')
 				{
 					portal *pm = &lv->pmap[xcell - 'A'];
@@ -509,7 +518,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				if(ray.v.y >= 0.0f) wdist.v.y = 1.0f - wdist.v.y; 
 				wdist.v.y *= 1.0f / (ray.v.y < 0.0f ? -ray.v.y : ray.v.y);
 
-				trace_ray_through(lv, &ldir, &cdist, &wdist, &pos, &ray, &cell, gy, gy, gz);
+				trace_ray_through(lv, &ldir, &cdist, &wdist, &pos, &ray, gy, gy, gz);
 				if(ldir == FYN || ldir == FYP)
 				{
 					*dist = cdist;
@@ -523,14 +532,12 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 					ldir = (ray.v.x < 0.0f ? FXN : FXP);
 					wdist.m = _mm_sub_ps(wdist.m, _mm_set1_ps(wdist.v.x));
 					wdist.v.x = iavel.v.x;
-					cell += gx;
 					cx += gx;
 
 				} else if(ldir == FZN || ldir == FZP) {
 					ldir = (ray.v.z < 0.0f ? FZN : FZP);
 					wdist.m = _mm_sub_ps(wdist.m, _mm_set1_ps(wdist.v.z));
 					wdist.v.z = iavel.v.z;
-					cell += gz*lpitch;
 					cz += gz;
 				}
 
@@ -545,12 +552,13 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				wdist.v.y = pos.v.y;
 				if(ray.v.y >= 0.0f) wdist.v.y = 1.0f - wdist.v.y; 
 				wdist.v.y *= iavel.v.y;
+				cell = get_cell(lv, cx, cz);
 			} break;
 
 			default: // Treat this as a wall.
-			if(*cell >= 'A' && *cell <= 'Z')
+			if(cell >= 'A' && cell <= 'Z')
 			{
-				portal *pm = &lv->pmap[*cell - 'A'];
+				portal *pm = &lv->pmap[cell - 'A'];
 
 				if(pm->x2 == -1)
 				{
@@ -675,7 +683,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 						break;
 				}
 
-				cell = lv->data + lpitch*cz + cx;
+				cell = get_cell(lv, cx, cz);
 				break;
 			} else {
 				*dist = cdist;
@@ -1043,27 +1051,90 @@ int mainloop(void)
 
 		mat4_roty(&cam, tdiff*3.0f*(k_turnleft - k_turnright));
 
+		// Take old cell + pos
 		int cx1 = (int)cam.v.w.v.x;
 		int cz1 = (int)cam.v.w.v.z;
 
-		cam.v.w.m = _mm_add_ps(cam.v.w.m,
+		// Get velocity
+		vec4 vel;
+		vel.m = _mm_add_ps(
 			_mm_mul_ps(cam.v.z.m,
-				_mm_set1_ps(tdiff*5.0f*(k_moveforward - k_moveback))));
-		cam.v.w.m = _mm_add_ps(cam.v.w.m,
+				_mm_set1_ps(tdiff*5.0f*(k_moveforward - k_moveback))),
 			_mm_mul_ps(cam.v.x.m,
 				_mm_set1_ps(tdiff*5.0f*(k_moveleft - k_moveright))));
 
+		// Move
+		cam.v.w.m = _mm_add_ps(cam.v.w.m, vel.m);
+
+		// Get newer pos
+		float px1 = cam.v.w.v.x;
+		float py1 = cam.v.w.v.y;
+		float pz1 = cam.v.w.v.z;
+
+		// Perform pushbacks
+		int gx1 = (vel.v.x < 0.0f ? -1 : 1);
+		int gy1 = (vel.v.y < 0.0f ? -1 : 1);
+		int gz1 = (vel.v.z < 0.0f ? -1 : 1);
+		float bx1 = px1 + gx1*PLAYER_BBOX;
+		float by1 = py1 + gy1*PLAYER_BBOX;
+		float bz1 = pz1 + gz1*PLAYER_BBOX;
+
+		int bcx = (int)bx1;
+		int bcy = (int)by1;
+		int bcz = (int)bz1;
+
+		if(cx1 != bcx && cz1 != bcz)
+		{
+			char cellx = get_cell(lv, bcx, cz1);
+			char cellz = get_cell(lv, cx1, bcz);
+			char cellc = get_cell(lv, bcx, bcz);
+
+			int solx = celltype_is_solid(lv, cellx);
+			int solz = celltype_is_solid(lv, cellz);
+			int solc = celltype_is_solid(lv, cellc);
+
+			if(solx && solz)
+			{
+				cam.v.w.v.x = cx1 + 0.5f + (0.5f-PLAYER_BBOX)*gx1;
+				cam.v.w.v.z = cz1 + 0.5f + (0.5f-PLAYER_BBOX)*gz1;
+
+			} else if(solx) {
+				cam.v.w.v.x = cx1 + 0.5f + (0.5f-PLAYER_BBOX)*gx1;
+
+			} else {
+				cam.v.w.v.z = cz1 + 0.5f + (0.5f-PLAYER_BBOX)*gz1;
+
+			}
+		} else if(cx1 != bcx) {
+			char c = get_cell(lv, bcx, bcz);
+
+			if(celltype_is_solid(lv, c))
+				cam.v.w.v.x = cx1 + 0.5f + (0.5f-PLAYER_BBOX)*gx1;
+		} else if(cz1 != bcz) {
+			char c = get_cell(lv, bcx, bcz);
+
+			if(celltype_is_solid(lv, c))
+				cam.v.w.v.z = cz1 + 0.5f + (0.5f-PLAYER_BBOX)*gz1;
+		}
+
+		// Get new cell
 		int cx2 = (int)cam.v.w.v.x;
 		int cz2 = (int)cam.v.w.v.z;
 
 		if(cx1 != cx2 || cz1 != cz2)
 		{
 			// Check cell types
-			char c1 = lv->data[lv->w*cz1 + cx1];
-			char c2 = lv->data[lv->w*cz2 + cx2];
+			char c1 = get_cell(lv, cx1, cz1);
+			char c2 = get_cell(lv, cx2, cz2);
 
-			if(c2 >= 'A' && c2 <= 'Z')
+			if(c1 == '#' && c2 == '"')
 			{
+				cam.v.w.v.y -= 1.0f;
+
+			} else if(c1 == '"' && c2 == '#') {
+				cam.v.w.v.y += 1.0f;
+
+			} else if(c2 >= 'A' && c2 <= 'Z') {
 				portal *pm = &lv->pmap[c2 - 'A'];
 
 				printf("TRAVERSE %c\n", c2);
