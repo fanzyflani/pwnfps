@@ -19,9 +19,9 @@
 
 #define EPSILON 0.0000000000001f
 
-#define DEF_SCALE 1
-#define DEF_RWIDTH 640
-#define DEF_RHEIGHT 480
+#define DEF_SCALE 3
+#define DEF_RWIDTH 320
+#define DEF_RHEIGHT 200
 #define DEF_WIDTH ((DEF_SCALE)*(DEF_RWIDTH))
 #define DEF_HEIGHT ((DEF_SCALE)*(DEF_RHEIGHT))
 
@@ -235,7 +235,7 @@ static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *
 	// Return colour
 	col = _mm_mul_ps(col, _mm_set1_ps(diffuse));
 
-	if(hitctr >= 0 && hitctr < 1)
+	if(hitctr >= 0 && hitctr < 2)
 	{
 		vec4 ray, pos;
 		ray.m = iray->m;
@@ -290,7 +290,7 @@ static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *
 			_mm_mul_ps(_mm_set1_ps(refl), col),
 			_mm_mul_ps(_mm_set1_ps(1.0f-refl), bcol));
 
-		*dist += odist;
+		*dist = odist;
 	}
 
 	return col;
