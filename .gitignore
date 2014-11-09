@@ -1,0 +1,18 @@
+# final binaries
+pwnfps
+pwnfps.exe
+
+# libs
+*.dll
+
+# objects
+*.o
+
+# VIM
+.*.swp
+.*.swo
+
+# some stupid text editors
+*~
+
+
