@@ -29,7 +29,13 @@
 #define DEF_WIDTH ((DEF_SCALE)*(DEF_RWIDTH))
 #define DEF_HEIGHT ((DEF_SCALE)*(DEF_RHEIGHT))
 
+#define COL_CEIL  _mm_setr_ps(30.0f, 30.0f, 0.0f, 0.0f)
+#define COL_FLOOR _mm_setr_ps(1.0f, 1.0f, 1.0f, 0.0f)
+#define COL_WALL  _mm_setr_ps(0.8f, 0.8f, 1.0f, 0.0f)
+
 const float isqrt2 = 0.7071067811865476f;
+
+float sec_current = 0.0f;
 
 enum
 {
@@ -254,6 +260,8 @@ static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *
 	// Return colour
 	col = _mm_mul_ps(col, _mm_set1_ps(diffuse));
 
+	float refl = 0.25f;
+
 	if(hitctr >= 0 && hitctr < REFLECT)
 	{
 		vec4 ray, pos;
@@ -286,10 +294,27 @@ static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *
 				pos.v.y -= 0.001f;
 				break;
 
-			case FYN:
-				ray.v.y = -ray.v.y;
+			case FYN: {
+				//ray.v.y = -ray.v.y;
 				pos.v.y += 0.001f;
-				break;
+				refl = 0.7f;
+				vec4 norm;
+				float ang = ((float)M_PI)*2.0f*(
+					sinf(((float)M_PI)*0.5f*pos.v.x)
+					+ cosf(((float)M_PI)*0.5f*pos.v.z)
+					+ sec_current*1.0f); 
+				norm.m = v_normalise(_mm_setr_ps(sinf(ang), 38.0f, cosf(ang), 0.0f));
+				//norm.m = v_normalise(_mm_setr_ps(0.0f, 1.0f, 0.0f, 0.0f));
+
+				float rmul = -2.0f * (0.0f
+					+ ray.v.x*norm.v.x
+					+ ray.v.y*norm.v.y
+					+ ray.v.z*norm.v.z);
+
+				ray.m = v_normalise(_mm_add_ps(
+					_mm_mul_ps(_mm_set1_ps(rmul), norm.m),
+					ray.m));
+			} break;
 
 		}
 
@@ -301,7 +326,6 @@ static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *
 		randfs(seed);
 
 		float odist = *dist;
-		const float refl = 0.25f;
 		*dist = 0;
 		__m128 bcol = col;
 		col = trace_ray(hitctr+1, seed, lv, dist, &pos, &ray, col);
@@ -420,8 +444,8 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 					*dist = cdist;
 					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
 						gy > 0 && cell != '$'
-						? _mm_setr_ps(30.0f, 30.0f, 0.0f, 0.0f)
-						: _mm_setr_ps(1.0f, 1.0f, 1.0f, 0.0f));
+						? COL_CEIL
+						: COL_FLOOR);
 
 				} else if(ldir == FXN || ldir == FXP) {
 					wdist.m = _mm_sub_ps(wdist.m, _mm_set1_ps(wdist.v.x));
@@ -456,8 +480,8 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 					*dist = cdist;
 					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
 						gy > 0
-						? _mm_setr_ps(30.0f, 30.0f, 0.0f, 0.0f)
-						: _mm_setr_ps(1.0f, 1.0f, 1.0f, 0.0f));
+						? COL_CEIL
+						: COL_FLOOR);
 
 				} else if(ldir == FXN || ldir == FXP) {
 					wdist.m = _mm_sub_ps(wdist.m, _mm_set1_ps(wdist.v.x));
@@ -511,12 +535,12 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 
 						*dist = cdist;
 						return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
-							_mm_setr_ps(0.8f, 0.8f, 1.0f, 0.0f));
+							COL_WALL);
 
 					default:
 						*dist = cdist;
 						return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
-							_mm_setr_ps(0.8f, 0.8f, 1.0f, 0.0f));
+							COL_WALL);
 				}
 				break;
 
@@ -547,8 +571,8 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 					ldir = (ray.v.y < 0.0f ? FYN : FYP);
 					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
 						ray.v.y >= 0.0f
-						? _mm_setr_ps(30.0f, 30.0f, 0.0f, 0.0f)
-						: _mm_setr_ps(1.0f, 1.0f, 1.0f, 0.0f));
+						? COL_CEIL
+						: COL_FLOOR);
 
 				} else if(ldir == FXN || ldir == FXP) {
 					ldir = (ray.v.x < 0.0f ? FXN : FXP);
@@ -588,7 +612,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 					*dist = cdist;
 					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
 						//_mm_setr_ps(0.0f, 0.0f, 5.0f, 0.0f));
-						_mm_setr_ps(0.8f, 0.8f, 1.0f, 0.0f));
+						COL_WALL);
 				}
 
 				// Find out which cell we are
@@ -711,8 +735,8 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				*dist = cdist;
 				return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
 					ldir == FYP
-					? _mm_setr_ps(30.0f, 30.0f, 0.0f, 0.0f)
-					: _mm_setr_ps(0.8f, 0.8f, 1.0f, 0.0f));
+					? COL_CEIL
+					: COL_WALL);
 			}
 
 		}
@@ -1040,6 +1064,7 @@ int mainloop(void)
 		//SDL_Delay(10);
 
 		float tdiff = (tnext - tlast) * (1.0f/1000.0f);
+		sec_current += tdiff;
 		tlast = tnext;
 		fps++;
 
