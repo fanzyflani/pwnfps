@@ -20,6 +20,8 @@
 #define EPSILON 0.0000000000001f
 
 #define PLAYER_BBOX 0.2f
+#define REFLECT 2
+#define POSTPROC_BLUR
 
 #define DEF_SCALE 3
 #define DEF_RWIDTH 320
@@ -42,10 +44,12 @@ enum
 typedef union vec4_s
 {
 	float a[4];
+	int32_t ai[4];
 	struct { float x, y, z, w; } v;
 	struct { float b, g, r, a; } c;
 	struct { float s, t, r, q; } t;
 	__m128 m;
+	__m128i mi;
 } vec4;
 
 typedef union mat4_s
@@ -85,19 +89,19 @@ uint32_t *tsbuf = NULL;
 float *zbuf = NULL;
 level *lvroot = NULL;
 
-uint32_t randi(uint32_t *seed)
+static uint32_t randi(uint32_t *seed)
 {
 	*seed = (*seed * 25739) + 4;
 	*seed &= 0x7FFFFFFF;
 	return *seed;
 }
 
-float randfu(uint32_t *seed)
+static float randfu(uint32_t *seed)
 {
 	return (randi(seed)) % 3759 / 3759.0f;
 }
 
-float randfs(uint32_t *seed)
+static float randfs(uint32_t *seed)
 {
 	return (randfu(seed)) * 2.0f - 1.0f;
 }
@@ -250,7 +254,7 @@ static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *
 	// Return colour
 	col = _mm_mul_ps(col, _mm_set1_ps(diffuse));
 
-	if(hitctr >= 0 && hitctr < 2)
+	if(hitctr >= 0 && hitctr < REFLECT)
 	{
 		vec4 ray, pos;
 		ray.m = iray->m;
@@ -494,6 +498,20 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				{
 					case '#':
 						break;
+
+					case '"':
+						// revert our adjustments
+						// otherwise reflections are broken
+						pos.v.y += 1.0f;
+
+						if(gy > 0.0f)
+							wdist.v.y -= iavel.v.y;
+						else
+							wdist.v.y += iavel.v.y;
+
+						*dist = cdist;
+						return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
+							_mm_setr_ps(0.8f, 0.8f, 1.0f, 0.0f));
 
 					default:
 						*dist = cdist;
@@ -761,6 +779,7 @@ void trace_screen_centred(level *lv, int x1, int y1, int x2, int y2, const mat4 
 		}
 	}
 
+#ifdef POSTPROC_BLUR
 	// Apply focal blur
 	// TODO: isolate this to the camera region
 	memcpy(tsbuf, sbuf, sizeof(uint32_t)*rwidth*rheight);
@@ -776,25 +795,41 @@ void trace_screen_centred(level *lv, int x1, int y1, int x2, int y2, const mat4 
 
 		const float fstr = 0.002f * dimy;
 		const float foffs = 1.0f;
-		for(cx = 0; cx < dimx; cx++)
-		{
-			float z = (*(dist++) - foffs);
-			uint32_t acc = 0;
+		// XXX: WARNING: EXPECTS A WIDTH DIVISIBLE BY 4
+		// i'm currently just not blurring the last dimx%4 pixels in that case
 
+		for(cx = 0; cx < dimx-3; cx += 4)
+		{
+			vec4 vacc;
+			vec4 vbuf[4];
 			for(i = 0; i < 4; i++)
 			{
-				x = cx + randfs(&seed) * fstr * z;
-				y = cy + randfs(&seed) * fstr * z;
-				if(x < 0) x = 0;
-				if(y < 0) y = 0;
-				if(x >= dimx) x = dimx-1;
-				if(y >= dimy) y = dimy-1;
-				acc += (tsbuf[x + y*rwidth]>>2)&0x3F3F3F3F;
+				int j;
+				for(j = 0; j < 4; j++)
+				{
+					float z = (dist[j] - foffs);
+					x = cx + j + randfs(&seed) * fstr * z;
+					y = cy + randfs(&seed) * fstr * z;
+					if(x < 0) x = 0;
+					if(y < 0) y = 0;
+					if(x >= dimx) x = dimx-1;
+					if(y >= dimy) y = dimy-1;
+					vbuf[i].ai[j] = tsbuf[x + y*rwidth];
+				}
 			}
 
-			*(p++) = acc;
+
+			vacc.mi = _mm_avg_epu8(
+				_mm_avg_epu8(vbuf[0].mi, vbuf[1].mi),
+				_mm_avg_epu8(vbuf[2].mi, vbuf[3].mi)
+			);
+
+			_mm_store_si128((void *)p, vacc.mi);
+			dist += 4;
+			p += 4;
 		}
 	}
+#endif
 }
 
 void screen_upscale(void)
