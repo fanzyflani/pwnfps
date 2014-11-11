@@ -21,7 +21,7 @@
 
 #define PLAYER_BBOX 0.2f
 #define REFLECT 2
-#define POSTPROC_BLUR
+#define POSTPROC_BLUR 1
 
 #define DEF_SCALE 3
 #define DEF_RWIDTH 320
@@ -66,6 +66,37 @@ typedef union mat4_s
 	struct { vec4 s, t, r, q; } t;
 } mat4;
 
+typedef enum part_typ_e
+{
+	P_INVAL = 0,
+
+	P_SPHERE,
+
+	P_CSG_UNION, // A + B
+	P_CSG_DIFF, // A - B
+	P_CSG_INTER, // A * B
+
+	P_MAX
+} part_typ;
+
+typedef union part_s part;
+union part_s
+{
+	part_typ typ;
+
+	struct {
+		part_typ typ;
+		float r;
+		vec4 pos;
+		vec4 col;
+	} sphere;
+
+	struct {
+		part_typ typ;
+		part *a, *b;
+	} csg;
+};
+
 typedef struct portal_s
 {
 	int x1, z1;
@@ -83,6 +114,10 @@ typedef struct level_s
 	portal pmap[26];
 
 	char *data;
+
+	// hey let's thrash the memory allocator!
+	part ***parts;
+	uint16_t *parts_num;
 } level;
 
 int rwidth = DEF_RWIDTH;
@@ -112,7 +147,21 @@ static float randfs(uint32_t *seed)
 	return (randfu(seed)) * 2.0f - 1.0f;
 }
 
-__m128 v_normalise(__m128 v)
+static inline float v_dot(__m128 va, __m128 vb)
+{
+	__m128 v2 = _mm_mul_ps(va, vb);
+
+	// get that horizontal action working
+	// TODO: get a better non-shufps method working
+	__m128 va1 = _mm_add_ps(v2,
+		_mm_shuffle_ps(v2, v2, 0x4E));
+	__m128 va2 = _mm_add_ps(va1,
+		_mm_shuffle_ps(va1, va1, 0xB1));
+
+	return _mm_cvtss_f32(va2);
+}
+
+static inline __m128 v_normalise(__m128 v)
 {
 	__m128 v2 = _mm_mul_ps(v, v);
 
@@ -168,9 +217,9 @@ void mat4_roty(mat4 *A, float ang)
 
 static int celltype_is_solid(level *lv, char c, char oldcell, float y)
 {
-	if(c == '"' && oldcell == '#')
+	if(c == '"' && (oldcell == '#' || oldcell == '&'))
 		return y < 1.0f || y >= 2.0f;
-	if(c == '#')
+	if(c == '#' || c == '&')
 		return y < 0.0f || y >= 2.0f;
 	if(c == ';' || c == '$' || c == '"')
 		return y < 0.0f || y >= 1.0f;
@@ -186,7 +235,7 @@ static int celltype_is_free(char c)
 {
 	if(c == ';' || c == '$' || c == '"')
 		return 1;
-	if(c == '#')
+	if(c == '#' || c == '&')
 		return 1;
 	if(c == '>' || c == '<' || c == '^' || c == ',')
 		return 1;
@@ -216,7 +265,7 @@ static char get_cell(level *lv, int cx, int cz)
 
 static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, const vec4 *ifrom, const vec4 *iray, __m128 icol);
 
-static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *ifrom, const vec4 *ipos, const vec4 *iray, int ldir, float *dist, __m128 icol, __m128 col)
+static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *ifrom, const vec4 *ipos, const vec4 *iray, int ldir, float *dist, __m128 icol, float fog, __m128 col)
 {
 	float diffuse;
 
@@ -327,11 +376,21 @@ static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *
 
 		float odist = *dist;
 		*dist = 0;
+
 		__m128 bcol = col;
 		col = trace_ray(hitctr+1, seed, lv, dist, &pos, &ray, col);
 		col = _mm_add_ps(
 			_mm_mul_ps(_mm_set1_ps(refl), col),
 			_mm_mul_ps(_mm_set1_ps(1.0f-refl), bcol));
+
+		if(fog != 0.0f)
+		{
+			fog = expf(-0.6f*fog);
+			col = _mm_add_ps(
+				_mm_mul_ps(_mm_set1_ps(fog), col),
+				_mm_mul_ps(_mm_set1_ps(1.0f-fog), _mm_set1_ps(1.0f)));
+		}
+
 
 		*dist = odist;
 	}
@@ -375,6 +434,8 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 	vec4 iavel, avel, wdist;
 	int gx, gy, gz;
 	float cdist = 0.0f;
+	float fog = 0.0f;
+	float fogbeg = 0.0f;
 
 	// Copy our constant inputs
 	ray.m = iray->m;
@@ -387,6 +448,96 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 	ray.v.z += randfs(seed) * 0.004f;
 	*/
 	ray.m = v_normalise(ray.m);
+
+	// TEST: Trace a sphere
+	{
+		vec4 sph_pos, sph_rpos, sph_col;
+		float sph_rad = 0.3f;
+		float sph_rad2 = sph_rad * sph_rad;
+		sph_rpos.m = _mm_setr_ps(8.5f, 0.3f, 7.0f, 1.0f);
+		sph_col.m = _mm_setr_ps(0.8f, 1.0f, 0.8f, 1.0f);
+
+		float sph_dist = -1.0f;
+
+		// Get relative pos
+		sph_pos.m = _mm_sub_ps(sph_rpos.m, pos.m);
+
+		// Get distance + dot
+		float sph_dist2 = v_dot(sph_pos.m, sph_pos.m);
+		float sph_dot = v_dot(sph_pos.m, ray.m);
+		if(sph_dot > 0.0f)
+		{
+			float sph_calcrad2 = (sph_dist2 - sph_dot*sph_dot);
+
+			if(sph_calcrad2 < sph_rad2)
+			{
+				// Get correct dist
+				float sph_sdist2 = 1.0f - sph_calcrad2/sph_rad2;
+				sph_dist = sqrtf(sph_dist2) - sqrtf(sph_sdist2);
+				*dist = sph_dist;
+				pos.m = _mm_add_ps(pos.m,
+					_mm_mul_ps(_mm_set1_ps(sph_dist), ray.m));
+
+				// Do diffuse
+				vec4 sph_norm;
+
+				//float diff = -v_dot(ray.m, v_normalise(_mm_sub_ps(pos.m, sph_rpos.m)));
+				sph_norm.m = v_normalise(_mm_sub_ps(pos.m, sph_rpos.m));
+				float diff = -v_dot(ray.m, sph_norm.m);
+				if(diff < 0.0f) diff = 0.0f;
+				float amb = 0.2f;
+				diff = amb + (1.0f - amb)*diff;
+				sph_col.m = _mm_mul_ps(_mm_set1_ps(diff), sph_col.m);
+
+				// Reflect
+				if(hitctr >= 0 && hitctr < REFLECT)
+				{
+					//ray.v.y = -ray.v.y;
+					pos.m = _mm_sub_ps(pos.m,
+						_mm_mul_ps(_mm_set1_ps(0.001f), ray.m));
+					float refl = 0.7f;
+
+					float rmul = -2.0f * (0.0f
+						+ ray.v.x*sph_norm.v.x
+						+ ray.v.y*sph_norm.v.y
+						+ ray.v.z*sph_norm.v.z);
+
+					ray.m = v_normalise(_mm_add_ps(
+						_mm_mul_ps(_mm_set1_ps(rmul), sph_norm.m),
+						ray.m));
+
+					const float rblur = 0.03f;
+					ray.v.x += randfs(seed) * rblur;
+					ray.v.y += randfs(seed) * rblur;
+					randfs(seed);
+					ray.v.z += randfs(seed) * rblur;
+					randfs(seed);
+
+					float odist = *dist;
+					*dist = 0.0f;
+
+					__m128 bcol = sph_col.m;
+					sph_col.m = trace_ray(hitctr+1, seed, lv, dist, &pos, &ray, sph_col.m);
+					sph_col.m = _mm_add_ps(
+						_mm_mul_ps(_mm_set1_ps(refl), sph_col.m),
+						_mm_mul_ps(_mm_set1_ps(1.0f-refl), bcol));
+
+					if(fog != 0.0f)
+					{
+						fog = expf(-0.6f*fog);
+						sph_col.m = _mm_add_ps(
+							_mm_mul_ps(_mm_set1_ps(fog), sph_col.m),
+							_mm_mul_ps(_mm_set1_ps(1.0f-fog), _mm_set1_ps(1.0f)));
+					}
+
+
+					*dist = odist;
+				}
+
+				return sph_col.m;
+			}
+		}
+	}
 
 	// Find our starting point
 	int cx = (int)ifrom->v.x;
@@ -437,13 +588,17 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				// Trace to edge
 
 				//printf("%f %f %f %f\n", wdist.v.x, wdist.v.z, iavel.v.x, iavel.v.z);
+				if(this_cell == '$') fogbeg = cdist;
+
 				trace_ray_through(lv, &ldir, &cdist, &wdist, &pos, &ray, gx, gy, gz);
+
+				if(this_cell == '$') fog += cdist - fogbeg;
 
 				if(ldir == FYN || ldir == FYP)
 				{
 					*dist = cdist;
-					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
-						gy > 0 && cell != '$'
+					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol, fog,
+						gy > 0
 						? COL_CEIL
 						: COL_FLOOR);
 
@@ -459,7 +614,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				}
 
 				cell = get_cell(lv, cx, cz);
-				if(this_cell == '"' && cell == '#')
+				if(this_cell == '"' && (cell == '#' || cell == '&'))
 				{
 					pos.v.y += 1.0f;
 
@@ -471,14 +626,20 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				break;
 
 			case '#':
+			case '&':
 				// 2-high room
 				if(gy > 0) wdist.v.y += iavel.v.y;
 
+				if(this_cell == '&') fogbeg = cdist;
+
 				trace_ray_through(lv, &ldir, &cdist, &wdist, &pos, &ray, gx, gy, gz);
+
+				if(this_cell == '&') fog += cdist - fogbeg;
+
 				if(ldir == FYN || ldir == FYP)
 				{
 					*dist = cdist;
-					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
+					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol, fog,
 						gy > 0
 						? COL_CEIL
 						: COL_FLOOR);
@@ -521,6 +682,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				switch(xcell)
 				{
 					case '#':
+					case '&':
 						break;
 
 					case '"':
@@ -534,12 +696,12 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 							wdist.v.y += iavel.v.y;
 
 						*dist = cdist;
-						return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
+						return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol, fog,
 							COL_WALL);
 
 					default:
 						*dist = cdist;
-						return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
+						return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol, fog,
 							COL_WALL);
 				}
 				break;
@@ -569,7 +731,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				{
 					*dist = cdist;
 					ldir = (ray.v.y < 0.0f ? FYN : FYP);
-					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
+					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol, fog,
 						ray.v.y >= 0.0f
 						? COL_CEIL
 						: COL_FLOOR);
@@ -610,7 +772,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				{
 					// ERROR
 					*dist = cdist;
-					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
+					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol, fog,
 						//_mm_setr_ps(0.0f, 0.0f, 5.0f, 0.0f));
 						COL_WALL);
 				}
@@ -637,7 +799,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				} else {
 					// ERROR
 					*dist = cdist;
-					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
+					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol, fog,
 						_mm_setr_ps(5.0f, 0.0f, 5.0f, 0.0f));
 				}
 
@@ -733,7 +895,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				break;
 			} else {
 				*dist = cdist;
-				return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol,
+				return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol, fog,
 					ldir == FYP
 					? COL_CEIL
 					: COL_WALL);
@@ -804,56 +966,60 @@ void trace_screen_centred(level *lv, int x1, int y1, int x2, int y2, const mat4 
 	}
 
 #ifdef POSTPROC_BLUR
-	// Apply focal blur
-	// TODO: isolate this to the camera region
-	memcpy(tsbuf, sbuf, sizeof(uint32_t)*rwidth*rheight);
-
-#pragma omp parallel for
-	for(cy = 0; cy < dimy; cy++)
+	int blurctr;
+	for(blurctr = 0; blurctr < POSTPROC_BLUR; blurctr++)
 	{
-		int cx, x, y;
-		int i;
-		uint32_t seed = cy*cy + 415135; // keyboard mash
-		float *dist = zbuf + cy*rwidth;
-		uint32_t *p = sbuf + cy*rwidth;
+		// Apply focal blur
+		// TODO: isolate this to the camera region
+		memcpy(tsbuf, sbuf, sizeof(uint32_t)*rwidth*rheight);
 
-		const float fstr = 0.002f * dimy;
-		const float foffs = 1.0f;
-		// XXX: WARNING: EXPECTS A WIDTH DIVISIBLE BY 4
-		// i'm currently just not blurring the last dimx%4 pixels in that case
-
-		for(cx = 0; cx < dimx-3; cx += 4)
+	#pragma omp parallel for
+		for(cy = 0; cy < dimy; cy++)
 		{
-			vec4 vacc;
-			vec4 vbuf[4];
-			for(i = 0; i < 4; i++)
+			int cx, x, y;
+			int i;
+			uint32_t seed = cy*cy + 415135; // keyboard mash
+			float *dist = zbuf + cy*rwidth;
+			uint32_t *p = sbuf + cy*rwidth;
+
+			const float fstr = 0.002f * dimy;
+			const float foffs = 1.0f;
+			// XXX: WARNING: EXPECTS A WIDTH DIVISIBLE BY 4
+			// i'm currently just not blurring the last dimx%4 pixels in that case
+
+			for(cx = 0; cx < dimx-3; cx += 4)
 			{
-				int j;
-				for(j = 0; j < 4; j++)
+				vec4 vacc;
+				vec4 vbuf[4];
+				for(i = 0; i < 4; i++)
 				{
-					float z = (dist[j] - foffs);
-					x = cx + j + randfs(&seed) * fstr * z;
-					y = cy + randfs(&seed) * fstr * z;
-					if(x < 0) x = 0;
-					if(y < 0) y = 0;
-					if(x >= dimx) x = dimx-1;
-					if(y >= dimy) y = dimy-1;
-					vbuf[i].ai[j] = tsbuf[x + y*rwidth];
+					int j;
+					for(j = 0; j < 4; j++)
+					{
+						float z = (dist[j] - foffs);
+						x = cx + j + randfs(&seed) * fstr * z;
+						y = cy + randfs(&seed) * fstr * z;
+						if(x < 0) x = 0;
+						if(y < 0) y = 0;
+						if(x >= dimx) x = dimx-1;
+						if(y >= dimy) y = dimy-1;
+						vbuf[i].ai[j] = tsbuf[x + y*rwidth];
+					}
 				}
+
+
+				vacc.mi = _mm_avg_epu8(
+					_mm_avg_epu8(vbuf[0].mi, vbuf[1].mi),
+					_mm_avg_epu8(vbuf[2].mi, vbuf[3].mi)
+				);
+
+				_mm_store_si128((void *)p, vacc.mi);
+				dist += 4;
+				p += 4;
 			}
-
-
-			vacc.mi = _mm_avg_epu8(
-				_mm_avg_epu8(vbuf[0].mi, vbuf[1].mi),
-				_mm_avg_epu8(vbuf[2].mi, vbuf[3].mi)
-			);
-
-			_mm_store_si128((void *)p, vacc.mi);
-			dist += 4;
-			p += 4;
 		}
+	#endif
 	}
-#endif
 }
 
 void screen_upscale(void)
@@ -985,10 +1151,16 @@ level *level_load(const char *fname)
 	done_load:
 
 	lv->data = malloc(lv->w * lv->h);
+	lv->parts = malloc(sizeof(part **) * lv->w * lv->h);
+	lv->parts_num = malloc(sizeof(uint16_t) * lv->w * lv->h);
 
 	for(z = 0; z < lv->h; z++)
 	for(x = 0; x < lv->w; x++)
+	{
 		lv->data[x + z*lv->w] = tdata[x + z*256];
+		lv->parts[x + z*lv->w] = NULL;
+		lv->parts_num[x + z*lv->w] = 0;
+	}
 	
 	for(i = 0; i < 26; i++)
 	{
@@ -1204,11 +1376,11 @@ int mainloop(void)
 			char c1 = get_cell(lv, cx1, cz1);
 			char c2 = get_cell(lv, cx2, cz2);
 
-			if(c1 == '#' && c2 == '"')
+			if((c1 == '#' || c1 == '&') && c2 == '"')
 			{
 				cam.v.w.v.y -= 1.0f;
 
-			} else if(c1 == '"' && c2 == '#') {
+			} else if(c1 == '"' && (c2 == '#' || c2 == '&')) {
 				cam.v.w.v.y += 1.0f;
 
 			} else if(c2 >= 'A' && c2 <= 'Z') {
@@ -1303,6 +1475,7 @@ int mainloop(void)
 
 int main(int argc, char *argv[])
 {
+	printf("Starting!\n");
 	SDL_Init(SDL_INIT_VIDEO | SDL_INIT_NOPARACHUTE);
 
 #ifndef WIN32
