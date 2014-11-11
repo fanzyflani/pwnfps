@@ -494,6 +494,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 	float aux_refl = 0.25f;
 	int aux_dir = -1;
 	vec4 aux_pos, aux_norm, aux_col;
+	aux_col.m = _mm_set1_ps(1.0f);
 
 	// Copy our constant inputs
 	ray.m = iray->m;
@@ -550,7 +551,6 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 		if(ci >= 0 && ci < lv->w*lv->h)
 		for(i = 0; i < lv->parts_num[ci]; i++)
 		{
-			part ptbase;
 			part *pt = lv->parts[ci][i];
 
 			// TODO: handle stuff other than spheres
@@ -623,7 +623,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				if(aux_dist != -1.0f && cdist > aux_dist)
 				{
 					*dist = aux_dist;
-					if(this_cell == '$') fog += *dist - fogbeg;
+					if(this_cell == '$' && aux_dist > fogbeg) fog += aux_dist - fogbeg;
 					return trace_hit_bounce(hitctr, seed, lv, &ray, &aux_pos, &aux_norm, aux_dir, aux_refl,
 						dist, fog, aux_col.m);
 				}
@@ -673,7 +673,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				if(aux_dist != -1.0f && cdist > aux_dist)
 				{
 					*dist = aux_dist;
-					if(this_cell == '&') fog += *dist - fogbeg;
+					if(this_cell == '&' && aux_dist > fogbeg) fog += aux_dist - fogbeg;
 					return trace_hit_bounce(hitctr, seed, lv, &ray, &aux_pos, &aux_norm, aux_dir, aux_refl,
 						dist, fog, aux_col.m);
 				}
@@ -1338,6 +1338,8 @@ level *level_load(const char *fname)
 
 int mainloop(void)
 {
+	int i;
+
 	SDL_Event ev;
 	mat4 cam;
 	vec4 gravity;
@@ -1367,22 +1369,30 @@ int mainloop(void)
 	float cangx = 0.0f;
 	float cangy = 0.0f;
 
-	part sph;
-	sph.typ = P_SPHERE;
-	sph.sph.r = 0.3f;
-	sph.sph.refl = 0.6f;
-	sph.sph.col.m = _mm_setr_ps(1.0f, 0.5f, 0.5f, 1.0f);
+	part sph[3];
+	for(i = 0; i < 3; i++)
+	{
+		sph[i].typ = P_SPHERE;
+		sph[i].sph.r = 0.3f;
+		sph[i].sph.refl = 0.6f;
+		sph[i].sph.col.m = _mm_setr_ps(1.0f, 0.5f, 0.5f, 1.0f);
+	}
 
 	for(;;)
 	{
-		sph.sph.pos.m = _mm_setr_ps(
-			2.0f+lv->sx + sinf(M_PI*sec_current)*0.7f,
-			0.3f + 0.3f + sinf(2.0f*M_PI*sec_current)*0.3f,
-			2.0f+lv->sz + cosf(M_PI*sec_current)*0.7f,
-			1.0f);
+		for(i = 0; i < 3; i++)
+		{
+			sph[i].sph.pos.m = _mm_setr_ps(
+				2.0f+lv->sx + sinf(M_PI*(sec_current*0.2f + i*2/3.0f))*0.7f,
+				0.3f + 0.1f + sinf(2.0f*M_PI*(sec_current*0.2f + i*2/3.0f))*0.1f,
+				2.0f+lv->sz + cosf(M_PI*(sec_current*0.2f + i*2/3.0f))*0.7f,
+				1.0f);
+		}
 
 		level_prepare_render(lv);
-		level_part_add(lv, &sph);
+		level_part_add(lv, &sph[0]);
+		level_part_add(lv, &sph[1]);
+		level_part_add(lv, &sph[2]);
 		trace_screen_centred(lv, 0, 0, rwidth, rheight, &cam);
 		screen_upscale();
 		SDL_Flip(screen);
