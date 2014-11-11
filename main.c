@@ -17,6 +17,7 @@
 #include <signal.h>
 #endif
 
+#define inline 
 #define EPSILON 0.0000000000001f
 
 #define PLAYER_BBOX 0.2f
@@ -265,6 +266,109 @@ static char get_cell(level *lv, int cx, int cz)
 
 static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, const vec4 *ifrom, const vec4 *iray, __m128 icol);
 
+static __m128 trace_hit_bounce(int hitctr, uint32_t *seed, level *lv, const vec4 *iray, const vec4 *ipos, const vec4 *inorm, int ldir, float refl, float *dist, float fog, __m128 col)
+{
+	//
+	if(hitctr < 0 || hitctr >= REFLECT)
+		return col;
+
+	vec4 ray, pos;
+	ray.m = iray->m;
+	pos.m = ipos->m;
+	switch(ldir)
+	{
+		case FXP:
+			ray.v.x = -ray.v.x;
+			pos.v.x -= 0.001f;
+			break;
+
+		case FXN:
+			ray.v.x = -ray.v.x;
+			pos.v.x += 0.001f;
+			break;
+
+		case FZP:
+			ray.v.z = -ray.v.z;
+			pos.v.z -= 0.001f;
+			break;
+
+		case FZN:
+			ray.v.z = -ray.v.z;
+			pos.v.z += 0.001f;
+			break;
+
+		case FYP:
+			ray.v.y = -ray.v.y;
+			pos.v.y -= 0.001f;
+			break;
+
+		case FYN: {
+			pos.v.y -= 0.001f;
+			vec4 norm;
+			float ang = ((float)M_PI)*2.0f*(
+				sinf(((float)M_PI)*0.5f*pos.v.x)
+				+ cosf(((float)M_PI)*0.5f*pos.v.z)
+				+ sec_current*1.0f); 
+			norm.m = v_normalise(_mm_setr_ps(sinf(ang), 38.0f, cosf(ang), 0.0f));
+
+			float rmul = -2.0f * (0.0f
+				+ ray.v.x*norm.v.x
+				+ ray.v.y*norm.v.y
+				+ ray.v.z*norm.v.z);
+
+			ray.m = v_normalise(_mm_add_ps(
+				_mm_mul_ps(_mm_set1_ps(rmul), norm.m),
+				ray.m));
+		} break;
+
+		default: {
+			pos.m = _mm_sub_ps(pos.m,
+				_mm_mul_ps(_mm_set1_ps(0.001f), ray.m));
+
+			vec4 norm;
+			norm.m = inorm->m;
+
+			float rmul = -2.0f * (0.0f
+				+ ray.v.x*norm.v.x
+				+ ray.v.y*norm.v.y
+				+ ray.v.z*norm.v.z);
+
+			ray.m = v_normalise(_mm_add_ps(
+				_mm_mul_ps(_mm_set1_ps(rmul), norm.m),
+				ray.m));
+		} break;
+
+	}
+
+	const float rblur = 0.03f;
+	ray.v.x += randfs(seed) * rblur;
+	ray.v.y += randfs(seed) * rblur;
+	randfs(seed);
+	ray.v.z += randfs(seed) * rblur;
+	randfs(seed);
+
+	float odist = *dist;
+	*dist = 0;
+
+	__m128 bcol = col;
+	col = trace_ray(hitctr+1, seed, lv, dist, &pos, &ray, col);
+	col = _mm_add_ps(
+		_mm_mul_ps(_mm_set1_ps(refl), col),
+		_mm_mul_ps(_mm_set1_ps(1.0f-refl), bcol));
+
+	if(fog != 0.0f)
+	{
+		fog = expf(-0.6f*fog);
+		col = _mm_add_ps(
+			_mm_mul_ps(_mm_set1_ps(fog), col),
+			_mm_mul_ps(_mm_set1_ps(1.0f-fog), _mm_set1_ps(1.0f)));
+	}
+
+	*dist = odist;
+
+	return col;
+}
+
 static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *ifrom, const vec4 *ipos, const vec4 *iray, int ldir, float *dist, __m128 icol, float fog, __m128 col)
 {
 	float diffuse;
@@ -309,93 +413,8 @@ static __m128 trace_hit_wall(int hitctr, uint32_t *seed, level *lv, const vec4 *
 	// Return colour
 	col = _mm_mul_ps(col, _mm_set1_ps(diffuse));
 
-	float refl = 0.25f;
-
-	if(hitctr >= 0 && hitctr < REFLECT)
-	{
-		vec4 ray, pos;
-		ray.m = iray->m;
-		pos.m = ipos->m;
-		switch(ldir)
-		{
-			case FXP:
-				ray.v.x = -ray.v.x;
-				pos.v.x -= 0.001f;
-				break;
-
-			case FXN:
-				ray.v.x = -ray.v.x;
-				pos.v.x += 0.001f;
-				break;
-
-			case FZP:
-				ray.v.z = -ray.v.z;
-				pos.v.z -= 0.001f;
-				break;
-
-			case FZN:
-				ray.v.z = -ray.v.z;
-				pos.v.z += 0.001f;
-				break;
-
-			case FYP:
-				ray.v.y = -ray.v.y;
-				pos.v.y -= 0.001f;
-				break;
-
-			case FYN: {
-				//ray.v.y = -ray.v.y;
-				pos.v.y += 0.001f;
-				refl = 0.7f;
-				vec4 norm;
-				float ang = ((float)M_PI)*2.0f*(
-					sinf(((float)M_PI)*0.5f*pos.v.x)
-					+ cosf(((float)M_PI)*0.5f*pos.v.z)
-					+ sec_current*1.0f); 
-				norm.m = v_normalise(_mm_setr_ps(sinf(ang), 38.0f, cosf(ang), 0.0f));
-				//norm.m = v_normalise(_mm_setr_ps(0.0f, 1.0f, 0.0f, 0.0f));
-
-				float rmul = -2.0f * (0.0f
-					+ ray.v.x*norm.v.x
-					+ ray.v.y*norm.v.y
-					+ ray.v.z*norm.v.z);
-
-				ray.m = v_normalise(_mm_add_ps(
-					_mm_mul_ps(_mm_set1_ps(rmul), norm.m),
-					ray.m));
-			} break;
-
-		}
-
-		const float rblur = 0.03f;
-		ray.v.x += randfs(seed) * rblur;
-		ray.v.y += randfs(seed) * rblur;
-		randfs(seed);
-		ray.v.z += randfs(seed) * rblur;
-		randfs(seed);
-
-		float odist = *dist;
-		*dist = 0;
-
-		__m128 bcol = col;
-		col = trace_ray(hitctr+1, seed, lv, dist, &pos, &ray, col);
-		col = _mm_add_ps(
-			_mm_mul_ps(_mm_set1_ps(refl), col),
-			_mm_mul_ps(_mm_set1_ps(1.0f-refl), bcol));
-
-		if(fog != 0.0f)
-		{
-			fog = expf(-0.6f*fog);
-			col = _mm_add_ps(
-				_mm_mul_ps(_mm_set1_ps(fog), col),
-				_mm_mul_ps(_mm_set1_ps(1.0f-fog), _mm_set1_ps(1.0f)));
-		}
-
-
-		*dist = odist;
-	}
-
-	return col;
+	return trace_hit_bounce(hitctr, seed, lv, iray, ipos, NULL, ldir,
+		(ldir == FYN ? 0.7f : 0.25f), dist, fog, col);
 }
 
 static void trace_ray_through(level *lv, int *ldir, float *cdist, vec4 *wdist, vec4 *pos, vec4 *ray, int gx, int gy, int gz)
@@ -490,51 +509,8 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				sph_col.m = _mm_mul_ps(_mm_set1_ps(diff), sph_col.m);
 
 				// Reflect
-				if(hitctr >= 0 && hitctr < REFLECT)
-				{
-					//ray.v.y = -ray.v.y;
-					pos.m = _mm_sub_ps(pos.m,
-						_mm_mul_ps(_mm_set1_ps(0.001f), ray.m));
-					float refl = 0.7f;
-
-					float rmul = -2.0f * (0.0f
-						+ ray.v.x*sph_norm.v.x
-						+ ray.v.y*sph_norm.v.y
-						+ ray.v.z*sph_norm.v.z);
-
-					ray.m = v_normalise(_mm_add_ps(
-						_mm_mul_ps(_mm_set1_ps(rmul), sph_norm.m),
-						ray.m));
-
-					const float rblur = 0.03f;
-					ray.v.x += randfs(seed) * rblur;
-					ray.v.y += randfs(seed) * rblur;
-					randfs(seed);
-					ray.v.z += randfs(seed) * rblur;
-					randfs(seed);
-
-					float odist = *dist;
-					*dist = 0.0f;
-
-					__m128 bcol = sph_col.m;
-					sph_col.m = trace_ray(hitctr+1, seed, lv, dist, &pos, &ray, sph_col.m);
-					sph_col.m = _mm_add_ps(
-						_mm_mul_ps(_mm_set1_ps(refl), sph_col.m),
-						_mm_mul_ps(_mm_set1_ps(1.0f-refl), bcol));
-
-					if(fog != 0.0f)
-					{
-						fog = expf(-0.6f*fog);
-						sph_col.m = _mm_add_ps(
-							_mm_mul_ps(_mm_set1_ps(fog), sph_col.m),
-							_mm_mul_ps(_mm_set1_ps(1.0f-fog), _mm_set1_ps(1.0f)));
-					}
-
-
-					*dist = odist;
-				}
-
-				return sph_col.m;
+				return trace_hit_bounce(hitctr, seed, lv, &ray, &pos, &sph_norm, -1, 0.7f,
+					dist, fog, sph_col.m);
 			}
 		}
 	}
