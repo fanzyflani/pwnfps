@@ -17,9 +17,10 @@
 #include <signal.h>
 #endif
 
-#define inline 
+//define inline 
 #define EPSILON 0.0000000000001f
 
+#define REFLECT_BLUR 0.03f
 #define PLAYER_BBOX 0.2f
 #define REFLECT 2
 #define POSTPROC_BLUR 1
@@ -88,9 +89,10 @@ union part_s
 	struct {
 		part_typ typ;
 		float r;
+		float refl;
 		vec4 pos;
 		vec4 col;
-	} sphere;
+	} sph;
 
 	struct {
 		part_typ typ;
@@ -116,9 +118,12 @@ typedef struct level_s
 
 	char *data;
 
-	// hey let's thrash the memory allocator!
 	part ***parts;
 	uint16_t *parts_num;
+	uint16_t *parts_max;
+
+	part **objs;
+	uint16_t objs_num;
 } level;
 
 int rwidth = DEF_RWIDTH;
@@ -198,6 +203,32 @@ void mat4_iden(mat4 *A)
 	for(i = 0; i < 4; i++)
 	for(j = 0; j < 4; j++)
 		A->a[i].a[j] = (i == j ? 1.0f : 0.0f);
+}
+
+void mat4_iden3(mat4 *A)
+{
+	int i, j;
+
+	for(i = 0; i < 3; i++)
+	for(j = 0; j < 3; j++)
+		A->a[i].a[j] = (i == j ? 1.0f : 0.0f);
+}
+
+
+void mat4_rotx(mat4 *A, float ang)
+{
+	float vs = sinf(ang);
+	float vc = cosf(ang);
+
+	float vyy = A->v.y.v.y;
+	float vyz = A->v.y.v.z;
+	float vzy = A->v.z.v.y;
+	float vzz = A->v.z.v.z;
+
+	A->v.y.v.y = vc*vyy + vs*vyz;
+	A->v.y.v.z = vc*vyz - vs*vyy;
+	A->v.z.v.y = vc*vzy + vs*vzz;
+	A->v.z.v.z = vc*vzz - vs*vzy;
 }
 
 void mat4_roty(mat4 *A, float ang)
@@ -340,12 +371,14 @@ static __m128 trace_hit_bounce(int hitctr, uint32_t *seed, level *lv, const vec4
 
 	}
 
-	const float rblur = 0.03f;
+#ifdef REFLECT_BLUR
+	const float rblur = REFLECT_BLUR;
 	ray.v.x += randfs(seed) * rblur;
 	ray.v.y += randfs(seed) * rblur;
 	randfs(seed);
 	ray.v.z += randfs(seed) * rblur;
 	randfs(seed);
+#endif
 
 	float odist = *dist;
 	*dist = 0;
@@ -449,6 +482,7 @@ static void trace_ray_through(level *lv, int *ldir, float *cdist, vec4 *wdist, v
 
 static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, const vec4 *ifrom, const vec4 *iray, __m128 icol)
 {
+	int i;
 	vec4 ray, pos;
 	vec4 iavel, avel, wdist;
 	int gx, gy, gz;
@@ -509,25 +543,35 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 	int maxsteps = 1000;
 	int ldir = FYN;
 
-	int sph_has_traced = (hitctr != 0);
-
 	while(maxsteps-- > 0)
 	{
-		// TEST: Trace a sphere
-		if(1 && sph_has_traced) {
-			vec4 sph_pos, sph_rpos, sph_col;
-			float sph_rad = 0.3f;
-			float sph_rad2 = sph_rad * sph_rad;
-			//sph_rpos.m = _mm_setr_ps(8.5f, 0.3f, 7.0f, 1.0f);
-			sph_rpos.m = _mm_setr_ps(0.5f, 0.3f, 0.5f, 1.0f);
-			sph_rpos.v.x += (float)cx;
-			sph_rpos.v.z += (float)cz;
-			sph_col.m = _mm_setr_ps(0.8f, 1.0f, 0.8f, 1.0f);
+		int ci = cx + lv->w*cz;
 
+		if(ci >= 0 && ci < lv->w*lv->h)
+		for(i = 0; i < lv->parts_num[ci]; i++)
+		{
+			part ptbase;
+			part *pt = lv->parts[ci][i];
+
+			// TODO: handle stuff other than spheres
+
+			/*
+			pt->typ = P_SPHERE;
+			pt->sph.r = 0.3f;
+			//sph_rpos.m = _mm_setr_ps(8.5f, 0.3f, 7.0f, 1.0f);
+			//sph_rpos.m = _mm_setr_ps(fmodf(0.5f + sec_current/2.0f, 1.0f), 0.3f, 0.5f, 1.0f);
+			pt->sph.pos.m = _mm_setr_ps(0.5f, 0.8f, 0.5f, 1.0f);
+			pt->sph.pos.v.x += (float)cx;
+			pt->sph.pos.v.z += (float)cz;
+			pt->sph.col.m = _mm_setr_ps(0.8f, 1.0f, 0.8f, 1.0f);
+			*/
+
+			float sph_rad2 = pt->sph.r * pt->sph.r;
 			float sph_dist = -1.0f;
 
 			// Get relative pos
-			sph_pos.m = _mm_sub_ps(sph_rpos.m, pos.m);
+			vec4 sph_pos;
+			sph_pos.m = _mm_sub_ps(pt->sph.pos.m, pos.m);
 
 			// Get distance + dot
 			float sph_dist2 = v_dot(sph_pos.m, sph_pos.m);
@@ -549,19 +593,17 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 							_mm_mul_ps(_mm_set1_ps(sph_dist), ray.m));
 
 						// Do diffuse
-						aux_norm.m = v_normalise(_mm_sub_ps(aux_pos.m, sph_rpos.m));
+						aux_norm.m = v_normalise(_mm_sub_ps(aux_pos.m, pt->sph.pos.m));
 						float diff = -v_dot(ray.m, aux_norm.m);
 						if(diff < 0.0f) diff = 0.0f;
 						float amb = 0.2f;
-						aux_refl = 0.7f;
+						aux_refl = pt->sph.refl;
 						diff = amb + (1.0f - amb)*diff;
-						aux_col.m = _mm_mul_ps(_mm_set1_ps(diff), sph_col.m);
+						aux_col.m = _mm_mul_ps(_mm_set1_ps(diff), pt->sph.col.m);
 					}
 				}
 			}
 		}
-
-		sph_has_traced = 1;
 
 		// Work out what to do with this cell
 		char this_cell = cell;
@@ -1056,8 +1098,59 @@ void trace_screen_centred(level *lv, int x1, int y1, int x2, int y2, const mat4 
 				p += 4;
 			}
 		}
-	#endif
 	}
+#endif
+}
+
+void level_part_add_bbox(level *lv, part *pt, int cx1, int cz1, int cx2, int cz2)
+{
+	int x, z;
+
+	// TODO: handle portal transitions
+	for(z = cz1; z <= cz2; z++)
+	for(x = cx1; x <= cx2; x++)
+	{
+		int ci = x + z*lv->w;
+		int idx = lv->parts_num[ci]++;
+		if(idx >= lv->parts_max[ci])
+		{
+			lv->parts_max[ci] = idx + 3;
+			lv->parts[ci] = realloc(lv->parts[ci], lv->parts_max[ci]*sizeof(part *));
+		}
+
+		lv->parts[ci][idx] = pt;
+	}
+
+}
+
+void level_part_add(level *lv, part *pt)
+{
+	switch(pt->typ)
+	{
+		case P_SPHERE:
+			level_part_add_bbox(lv, pt,
+				pt->sph.pos.v.x - pt->sph.r,
+				pt->sph.pos.v.z - pt->sph.r,
+				pt->sph.pos.v.x + pt->sph.r,
+				pt->sph.pos.v.z + pt->sph.r);
+			break;
+
+		default:
+			printf("unsupported part type %i\n", pt->typ);
+			fflush(stdout);
+			abort();
+	}
+
+}
+
+void level_prepare_render(level *lv)
+{
+	int x, z;
+
+	// Clear parts grid
+	for(z = 0; z < lv->h; z++)
+	for(x = 0; x < lv->w; x++)
+		lv->parts_num[x + z*lv->w] = 0;
 }
 
 void screen_upscale(void)
@@ -1098,6 +1191,8 @@ level *level_load(const char *fname)
 	char *tdata = malloc(256*256);
 	level *lv = malloc(sizeof(level));
 	memset(tdata, '.', 256*256);
+	lv->objs = NULL;
+	lv->objs_num = 0;
 
 	for(i = 0; i < 26; i++)
 	{
@@ -1191,6 +1286,7 @@ level *level_load(const char *fname)
 	lv->data = malloc(lv->w * lv->h);
 	lv->parts = malloc(sizeof(part **) * lv->w * lv->h);
 	lv->parts_num = malloc(sizeof(uint16_t) * lv->w * lv->h);
+	lv->parts_max = malloc(sizeof(uint16_t) * lv->w * lv->h);
 
 	for(z = 0; z < lv->h; z++)
 	for(x = 0; x < lv->w; x++)
@@ -1198,6 +1294,7 @@ level *level_load(const char *fname)
 		lv->data[x + z*lv->w] = tdata[x + z*256];
 		lv->parts[x + z*lv->w] = NULL;
 		lv->parts_num[x + z*lv->w] = 0;
+		lv->parts_max[x + z*lv->w] = 0;
 	}
 	
 	for(i = 0; i < 26; i++)
@@ -1260,13 +1357,32 @@ int mainloop(void)
 
 	int k_turnleft = 0;
 	int k_turnright = 0;
+	int k_turnup = 0;
+	int k_turndown = 0;
 	int k_moveforward = 0;
 	int k_moveback = 0;
 	int k_moveleft = 0;
 	int k_moveright = 0;
 
+	float cangx = 0.0f;
+	float cangy = 0.0f;
+
+	part sph;
+	sph.typ = P_SPHERE;
+	sph.sph.r = 0.3f;
+	sph.sph.refl = 0.6f;
+	sph.sph.col.m = _mm_setr_ps(1.0f, 0.5f, 0.5f, 1.0f);
+
 	for(;;)
 	{
+		sph.sph.pos.m = _mm_setr_ps(
+			2.0f+lv->sx + sinf(M_PI*sec_current)*0.7f,
+			0.3f + 0.3f + sinf(2.0f*M_PI*sec_current)*0.3f,
+			2.0f+lv->sz + cosf(M_PI*sec_current)*0.7f,
+			1.0f);
+
+		level_prepare_render(lv);
+		level_part_add(lv, &sph);
 		trace_screen_centred(lv, 0, 0, rwidth, rheight, &cam);
 		screen_upscale();
 		SDL_Flip(screen);
@@ -1306,6 +1422,14 @@ int mainloop(void)
 				case SDLK_RIGHT:
 					k_turnright = (ev.type == SDL_KEYDOWN ? 1 : 0);
 					break;
+				
+				case SDLK_UP:
+					k_turnup = (ev.type == SDL_KEYDOWN ? 1 : 0);
+					break;
+
+				case SDLK_DOWN:
+					k_turndown = (ev.type == SDL_KEYDOWN ? 1 : 0);
+					break;
 
 				case SDLK_w:
 					k_moveforward = (ev.type == SDL_KEYDOWN ? 1 : 0);
@@ -1326,6 +1450,11 @@ int mainloop(void)
 		}
 
 		mat4_roty(&cam, tdiff*3.0f*(k_turnleft - k_turnright));
+		//cangy += tdiff*3.0f*(k_turnleft - k_turnright);
+		//cangx += tdiff*3.0f*(k_turnup - k_turndown);
+		//mat4_iden3(&cam);
+		//mat4_rotx(&cam, cangx); // TODO!
+		//mat4_roty(&cam, cangy);
 
 		// Take old cell + pos
 		int cx1 = (int)cam.v.w.v.x;
@@ -1379,6 +1508,10 @@ int mainloop(void)
 				cam.v.w.v.x = cx1 + 0.5f + (0.5f-PLAYER_BBOX)*gx1;
 
 			} else if(solz) {
+				cam.v.w.v.z = cz1 + 0.5f + (0.5f-PLAYER_BBOX)*gz1;
+
+			} else if(solc) {
+				// TODO: quick trace to the wall
 				cam.v.w.v.z = cz1 + 0.5f + (0.5f-PLAYER_BBOX)*gz1;
 
 			}
