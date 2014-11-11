@@ -269,7 +269,7 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 static __m128 trace_hit_bounce(int hitctr, uint32_t *seed, level *lv, const vec4 *iray, const vec4 *ipos, const vec4 *inorm, int ldir, float refl, float *dist, float fog, __m128 col)
 {
 	//
-	if(hitctr < 0 || hitctr >= REFLECT)
+	if(hitctr < 0 || hitctr >= REFLECT || refl == 0.0f)
 		return col;
 
 	vec4 ray, pos;
@@ -456,6 +456,11 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 	float fog = 0.0f;
 	float fogbeg = 0.0f;
 
+	float aux_dist = -1.0f;
+	float aux_refl = 0.25f;
+	int aux_dir = -1;
+	vec4 aux_pos, aux_norm, aux_col;
+
 	// Copy our constant inputs
 	ray.m = iray->m;
 	pos.m = ifrom->m;
@@ -467,53 +472,6 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 	ray.v.z += randfs(seed) * 0.004f;
 	*/
 	ray.m = v_normalise(ray.m);
-
-	// TEST: Trace a sphere
-	{
-		vec4 sph_pos, sph_rpos, sph_col;
-		float sph_rad = 0.3f;
-		float sph_rad2 = sph_rad * sph_rad;
-		sph_rpos.m = _mm_setr_ps(8.5f, 0.3f, 7.0f, 1.0f);
-		sph_col.m = _mm_setr_ps(0.8f, 1.0f, 0.8f, 1.0f);
-
-		float sph_dist = -1.0f;
-
-		// Get relative pos
-		sph_pos.m = _mm_sub_ps(sph_rpos.m, pos.m);
-
-		// Get distance + dot
-		float sph_dist2 = v_dot(sph_pos.m, sph_pos.m);
-		float sph_dot = v_dot(sph_pos.m, ray.m);
-		if(sph_dot > 0.0f)
-		{
-			float sph_calcrad2 = (sph_dist2 - sph_dot*sph_dot);
-
-			if(sph_calcrad2 < sph_rad2)
-			{
-				// Get correct dist
-				float sph_sdist2 = 1.0f - sph_calcrad2/sph_rad2;
-				sph_dist = sqrtf(sph_dist2) - sqrtf(sph_sdist2);
-				*dist = sph_dist;
-				pos.m = _mm_add_ps(pos.m,
-					_mm_mul_ps(_mm_set1_ps(sph_dist), ray.m));
-
-				// Do diffuse
-				vec4 sph_norm;
-
-				//float diff = -v_dot(ray.m, v_normalise(_mm_sub_ps(pos.m, sph_rpos.m)));
-				sph_norm.m = v_normalise(_mm_sub_ps(pos.m, sph_rpos.m));
-				float diff = -v_dot(ray.m, sph_norm.m);
-				if(diff < 0.0f) diff = 0.0f;
-				float amb = 0.2f;
-				diff = amb + (1.0f - amb)*diff;
-				sph_col.m = _mm_mul_ps(_mm_set1_ps(diff), sph_col.m);
-
-				// Reflect
-				return trace_hit_bounce(hitctr, seed, lv, &ray, &pos, &sph_norm, -1, 0.7f,
-					dist, fog, sph_col.m);
-			}
-		}
-	}
 
 	// Find our starting point
 	int cx = (int)ifrom->v.x;
@@ -551,8 +509,60 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 	int maxsteps = 1000;
 	int ldir = FYN;
 
+	int sph_has_traced = (hitctr != 0);
+
 	while(maxsteps-- > 0)
 	{
+		// TEST: Trace a sphere
+		if(1 && sph_has_traced) {
+			vec4 sph_pos, sph_rpos, sph_col;
+			float sph_rad = 0.3f;
+			float sph_rad2 = sph_rad * sph_rad;
+			//sph_rpos.m = _mm_setr_ps(8.5f, 0.3f, 7.0f, 1.0f);
+			sph_rpos.m = _mm_setr_ps(0.5f, 0.3f, 0.5f, 1.0f);
+			sph_rpos.v.x += (float)cx;
+			sph_rpos.v.z += (float)cz;
+			sph_col.m = _mm_setr_ps(0.8f, 1.0f, 0.8f, 1.0f);
+
+			float sph_dist = -1.0f;
+
+			// Get relative pos
+			sph_pos.m = _mm_sub_ps(sph_rpos.m, pos.m);
+
+			// Get distance + dot
+			float sph_dist2 = v_dot(sph_pos.m, sph_pos.m);
+			float sph_dot = v_dot(sph_pos.m, ray.m);
+			if(sph_dot > 0.0f)
+			{
+				float sph_calcrad2 = (sph_dist2 - sph_dot*sph_dot);
+
+				if(sph_calcrad2 < sph_rad2)
+				{
+					// Get correct dist
+					float sph_sdist2 = 1.0f - sph_calcrad2/sph_rad2;
+					sph_dist = sqrtf(sph_dist2) - sqrtf(sph_sdist2);
+
+					if(aux_dist == -1.0f || sph_dist + cdist < aux_dist)
+					{
+						aux_dist = sph_dist + cdist;
+						aux_pos.m = _mm_add_ps(pos.m,
+							_mm_mul_ps(_mm_set1_ps(sph_dist), ray.m));
+
+						// Do diffuse
+						aux_norm.m = v_normalise(_mm_sub_ps(aux_pos.m, sph_rpos.m));
+						float diff = -v_dot(ray.m, aux_norm.m);
+						if(diff < 0.0f) diff = 0.0f;
+						float amb = 0.2f;
+						aux_refl = 0.7f;
+						diff = amb + (1.0f - amb)*diff;
+						aux_col.m = _mm_mul_ps(_mm_set1_ps(diff), sph_col.m);
+					}
+				}
+			}
+		}
+
+		sph_has_traced = 1;
+
 		// Work out what to do with this cell
 		char this_cell = cell;
 		switch(this_cell)
@@ -567,6 +577,14 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				if(this_cell == '$') fogbeg = cdist;
 
 				trace_ray_through(lv, &ldir, &cdist, &wdist, &pos, &ray, gx, gy, gz);
+
+				if(aux_dist != -1.0f && cdist > aux_dist)
+				{
+					*dist = aux_dist;
+					if(this_cell == '$') fog += *dist - fogbeg;
+					return trace_hit_bounce(hitctr, seed, lv, &ray, &aux_pos, &aux_norm, aux_dir, aux_refl,
+						dist, fog, aux_col.m);
+				}
 
 				if(this_cell == '$') fog += cdist - fogbeg;
 
@@ -609,6 +627,14 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				if(this_cell == '&') fogbeg = cdist;
 
 				trace_ray_through(lv, &ldir, &cdist, &wdist, &pos, &ray, gx, gy, gz);
+
+				if(aux_dist != -1.0f && cdist > aux_dist)
+				{
+					*dist = aux_dist;
+					if(this_cell == '&') fog += *dist - fogbeg;
+					return trace_hit_bounce(hitctr, seed, lv, &ray, &aux_pos, &aux_norm, aux_dir, aux_refl,
+						dist, fog, aux_col.m);
+				}
 
 				if(this_cell == '&') fog += cdist - fogbeg;
 
@@ -702,6 +728,13 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				if(ray.v.y >= 0.0f) wdist.v.y = 1.0f - wdist.v.y; 
 				wdist.v.y *= 1.0f / (ray.v.y < 0.0f ? -ray.v.y : ray.v.y);
 
+				if(aux_dist != -1.0f && cdist > aux_dist)
+				{
+					*dist = aux_dist;
+					return trace_hit_bounce(hitctr, seed, lv, &ray, &aux_pos, &aux_norm, aux_dir, aux_refl,
+						dist, fog, aux_col.m);
+				}
+
 				trace_ray_through(lv, &ldir, &cdist, &wdist, &pos, &ray, gy, gy, gz);
 				if(ldir == FYN || ldir == FYP)
 				{
@@ -748,6 +781,13 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				{
 					// ERROR
 					*dist = cdist;
+					if(aux_dist != -1.0f && cdist > aux_dist)
+					{
+						*dist = aux_dist;
+						return trace_hit_bounce(hitctr, seed, lv, &ray, &aux_pos, &aux_norm, aux_dir, aux_refl,
+							dist, fog, aux_col.m);
+					}
+
 					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol, fog,
 						//_mm_setr_ps(0.0f, 0.0f, 5.0f, 0.0f));
 						COL_WALL);
@@ -775,6 +815,13 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				} else {
 					// ERROR
 					*dist = cdist;
+					if(aux_dist != -1.0f && cdist > aux_dist)
+					{
+						*dist = aux_dist;
+						return trace_hit_bounce(hitctr, seed, lv, &ray, &aux_pos, &aux_norm, aux_dir, aux_refl,
+							dist, fog, aux_col.m);
+					}
+
 					return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol, fog,
 						_mm_setr_ps(5.0f, 0.0f, 5.0f, 0.0f));
 				}
@@ -871,6 +918,13 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 				break;
 			} else {
 				*dist = cdist;
+				if(aux_dist != -1.0f && cdist > aux_dist)
+				{
+					*dist = aux_dist;
+					return trace_hit_bounce(hitctr, seed, lv, &ray, &aux_pos, &aux_norm, aux_dir, aux_refl,
+						dist, fog, aux_col.m);
+				}
+
 				return trace_hit_wall(hitctr, seed, lv, ifrom, &pos, &ray, ldir, dist, icol, fog,
 					ldir == FYP
 					? COL_CEIL
@@ -878,6 +932,14 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 			}
 
 		}
+
+		if(aux_dist != -1.0f && cdist > aux_dist)
+		{
+			*dist = aux_dist;
+			return trace_hit_bounce(hitctr, seed, lv, &ray, &aux_pos, &aux_norm, aux_dir, aux_refl,
+				dist, fog, aux_col.m);
+		}
+
 	}
 
 	// TODO: handle OOB properly
