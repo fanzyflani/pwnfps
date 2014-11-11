@@ -111,16 +111,15 @@ typedef struct portal_s
 
 typedef struct level_s
 {
-	int w, h;
 	int sx, sz;
 
 	portal pmap[26];
 
-	char *data;
+	char data[64][64];
 
-	part ***parts;
-	uint16_t *parts_num;
-	uint16_t *parts_max;
+	part **parts[64][64];
+	uint16_t parts_num[64][64];
+	uint16_t parts_max[64][64];
 
 	part **objs;
 	uint16_t objs_num;
@@ -277,10 +276,10 @@ static int celltype_is_free(char c)
 
 static int find_free_dir_2d(level *lv, int x, int z)
 {
-	if(celltype_is_free(lv->data[lv->w*z + x+1])) return FXP;
-	if(celltype_is_free(lv->data[lv->w*(z+1)+x])) return FZP;
-	if(celltype_is_free(lv->data[lv->w*z + x-1])) return FXN;
-	if(celltype_is_free(lv->data[lv->w*(z-1)+x])) return FZN;
+	if(celltype_is_free(lv->data[z][x+1])) return FXP;
+	if(celltype_is_free(lv->data[z+1][x])) return FZP;
+	if(celltype_is_free(lv->data[z][x-1])) return FXN;
+	if(celltype_is_free(lv->data[z-1][x])) return FZN;
 
 	printf("NOT FREE %i %i\n", x, z);
 	return FXP; // stuff it
@@ -289,10 +288,10 @@ static int find_free_dir_2d(level *lv, int x, int z)
 static char get_cell(level *lv, int cx, int cz)
 {
 	// Clamp for safety
-	if(cx < 0 || cx >= lv->w) cx = 0;
-	if(cz < 0 || cz >= lv->h) cz = 0;
+	if(cx < 0 || cx >= 64) cx = 0;
+	if(cz < 0 || cz >= 64) cz = 0;
 	
-	return lv->data[cx + cz*lv->w];
+	return lv->data[cz][cx];
 }
 
 static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, const vec4 *ifrom, const vec4 *iray, __m128 icol);
@@ -546,12 +545,10 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 
 	while(maxsteps-- > 0)
 	{
-		int ci = cx + lv->w*cz;
-
-		if(ci >= 0 && ci < lv->w*lv->h)
-		for(i = 0; i < lv->parts_num[ci]; i++)
+		if(cx >= 0 && cx < 64 && cz >= 0 && cz < 64)
+		for(i = 0; i < lv->parts_num[cz][cx]; i++)
 		{
-			part *pt = lv->parts[ci][i];
+			part *pt = lv->parts[cz][cx][i];
 
 			// TODO: handle stuff other than spheres
 
@@ -1110,15 +1107,14 @@ void level_part_add_bbox(level *lv, part *pt, int cx1, int cz1, int cx2, int cz2
 	for(z = cz1; z <= cz2; z++)
 	for(x = cx1; x <= cx2; x++)
 	{
-		int ci = x + z*lv->w;
-		int idx = lv->parts_num[ci]++;
-		if(idx >= lv->parts_max[ci])
+		int idx = lv->parts_num[z][x]++;
+		if(idx >= lv->parts_max[z][x])
 		{
-			lv->parts_max[ci] = idx + 3;
-			lv->parts[ci] = realloc(lv->parts[ci], lv->parts_max[ci]*sizeof(part *));
+			lv->parts_max[z][x] = idx + 3;
+			lv->parts[z][x] = realloc(lv->parts[z][x], lv->parts_max[z][x]*sizeof(part *));
 		}
 
-		lv->parts[ci][idx] = pt;
+		lv->parts[z][x][idx] = pt;
 	}
 
 }
@@ -1148,9 +1144,9 @@ void level_prepare_render(level *lv)
 	int x, z;
 
 	// Clear parts grid
-	for(z = 0; z < lv->h; z++)
-	for(x = 0; x < lv->w; x++)
-		lv->parts_num[x + z*lv->w] = 0;
+	for(z = 0; z < 64; z++)
+	for(x = 0; x < 64; x++)
+		lv->parts_num[z][x] = 0;
 }
 
 void screen_upscale(void)
@@ -1188,9 +1184,9 @@ level *level_load(const char *fname)
 		return NULL;
 	}
 
-	char *tdata = malloc(256*256);
+	char *tdata = malloc(64*64);
 	level *lv = malloc(sizeof(level));
-	memset(tdata, '.', 256*256);
+	memset(tdata, '.', 64*64);
 	lv->objs = NULL;
 	lv->objs_num = 0;
 
@@ -1201,13 +1197,11 @@ level *level_load(const char *fname)
 		lv->pmap[i].c2 = ';';
 	}
 
-	lv->w = 0;
-	lv->h = 0;
 	lv->sx = 0;
 	lv->sz = 0;
-	for(z = 0; z < 256; z++)
+	for(z = 0; z < 64; z++)
 	{
-		for(x = 0; x < 256; x++)
+		for(x = 0; x < 64; x++)
 		{
 			int c = fgetc(fp);
 
@@ -1215,10 +1209,6 @@ level *level_load(const char *fname)
 			{
 				if(c == -1)
 				{
-					if(x != 0)
-					if(z+1 > lv->h)
-						lv->h = z+1;
-
 					goto done_load;
 				} else if(x == 0) {
 					x--;
@@ -1271,30 +1261,19 @@ level *level_load(const char *fname)
 				}
 			}
 
-			tdata[x + z*256] = c;
-
-			if(x+1 > lv->w)
-				lv->w = x+1;
+			tdata[x + z*64] = c;
 		}
-
-		if(z+1 > lv->h)
-			lv->h = z+1;
 	}
 
 	done_load:
 
-	lv->data = malloc(lv->w * lv->h);
-	lv->parts = malloc(sizeof(part **) * lv->w * lv->h);
-	lv->parts_num = malloc(sizeof(uint16_t) * lv->w * lv->h);
-	lv->parts_max = malloc(sizeof(uint16_t) * lv->w * lv->h);
-
-	for(z = 0; z < lv->h; z++)
-	for(x = 0; x < lv->w; x++)
+	for(z = 0; z < 64; z++)
+	for(x = 0; x < 64; x++)
 	{
-		lv->data[x + z*lv->w] = tdata[x + z*256];
-		lv->parts[x + z*lv->w] = NULL;
-		lv->parts_num[x + z*lv->w] = 0;
-		lv->parts_max[x + z*lv->w] = 0;
+		lv->data[z][x] = tdata[x + z*64];
+		lv->parts[z][x] = NULL;
+		lv->parts_num[z][x] = 0;
+		lv->parts_max[z][x] = 0;
 	}
 	
 	for(i = 0; i < 26; i++)
@@ -1309,18 +1288,18 @@ level *level_load(const char *fname)
 		
 		switch(d1)
 		{
-			case FXP: pm->c1 = lv->data[(pm->x1+1) + (pm->z1)*lv->w]; break;
-			case FZP: pm->c1 = lv->data[(pm->x1) + (pm->z1+1)*lv->w]; break;
-			case FXN: pm->c1 = lv->data[(pm->x1-1) + (pm->z1)*lv->w]; break;
-			case FZN: pm->c1 = lv->data[(pm->x1) + (pm->z1-1)*lv->w]; break;
+			case FXP: pm->c1 = lv->data[pm->z1][pm->x1+1]; break;
+			case FZP: pm->c1 = lv->data[pm->z1+1][pm->x1]; break;
+			case FXN: pm->c1 = lv->data[pm->z1][pm->x1-1]; break;
+			case FZN: pm->c1 = lv->data[pm->z1-1][pm->x1]; break;
 		}
 		
 		switch(d2)
 		{
-			case FXP: pm->c2 = lv->data[(pm->x2+1) + (pm->z2)*lv->w]; break;
-			case FZP: pm->c2 = lv->data[(pm->x2) + (pm->z2+1)*lv->w]; break;
-			case FXN: pm->c2 = lv->data[(pm->x2-1) + (pm->z2)*lv->w]; break;
-			case FZN: pm->c2 = lv->data[(pm->x2) + (pm->z2-1)*lv->w]; break;
+			case FXP: pm->c2 = lv->data[pm->z2][pm->x2+1]; break;
+			case FZP: pm->c2 = lv->data[pm->z2+1][pm->x2]; break;
+			case FXN: pm->c2 = lv->data[pm->z2][pm->x2-1]; break;
+			case FZN: pm->c2 = lv->data[pm->z2-1][pm->x2]; break;
 		}
 
 		printf("%c rot %i\n", i+'A', pm->rot12);
@@ -1330,7 +1309,6 @@ level *level_load(const char *fname)
 
 	fclose(fp);
 
-	printf("dims  %3i %3i\n", lv->w,  lv->h);
 	printf("spawn %3i %3i\n", lv->sx, lv->sz);
 
 	return lv;
