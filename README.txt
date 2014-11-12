@@ -4,7 +4,9 @@ raytraced portal engine for maximum euclidfuckery
 
 to build
 
-    cc -msse2 -fopenmp -g -O2 -o pwnfps main.c `sdl-config --cflags --libs` -lm
+    cc -msse2 -fopenmp -g -O2 -o pwnfps main.c `sdl-config --cflags --libs` `pkg-config lua-5.1 --cflags --libs` -lm
+
+if you're using a debian-derived distro you may want to try lua-51 rather than lua-5.1 or whatever the hell it is
 
 to build on windows, find some magical incantations as it's rather annoying
 
@@ -12,7 +14,7 @@ although it does appear to work! here's what i do:
 
     mingw32-gcc -msse2 -g -O2 -o pwnfps.exe main.c -Iwinlibs/SDL -Lwinlibs -lmingw32 -lSDLmain -lSDL -lm -Wall -Wextra -Wno-unused-parameter
 
-of course this requires a winlibs/ directory with SDL includes in winlibs/SDL/ and SDL libs in winlibs/
+of course this requires a winlibs/ directory with SDL includes in winlibs/SDL/ and SDL libs + lua stuff in winlibs/
 
 openmp highly recommended if you have more than one core
 (unless you like melting holes in your laptop)
