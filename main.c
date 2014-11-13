@@ -122,6 +122,21 @@ int mainloop(void)
 			fps = 0;
 		}
 
+		lua_getglobal(L, "on_tick");
+		if(lua_isnil(L, -1))
+		{
+			printf("ERROR: on_tick not defined\n");
+			return 2;
+		}
+
+		lua_pushnumber(L, sec_current);
+		lua_pushnumber(L, tdiff);
+		if(lua_pcall(L, 2, 0, 0) != 0)
+		{
+			printf("ERROR: on_tick broke (%s)\n", lua_tostring(L, -1));
+			return 2;
+		}
+
 		while(SDL_PollEvent(&ev))
 		switch(ev.type)
 		{

@@ -53,7 +53,13 @@ int lf_obj_free(lua_State *L)
 int lf_level_get(lua_State *L)
 {
 	// TODO!
-	return 0;
+	int cx = lua_tointeger(L, 1);
+	int cz = lua_tointeger(L, 2);
+
+	char c = get_cell(lvroot, cx, cz);
+	lua_pushlstring(L, &c, 1);
+
+	return 1;
 }
 
 int lf_level_set(lua_State *L)
@@ -73,7 +79,7 @@ lua_State *script_newvm(void)
 	lua_pushcfunction(L, lf_obj_new); lua_setglobal(L, "obj_new");
 	lua_pushcfunction(L, lf_obj_set); lua_setglobal(L, "obj_set");
 	lua_pushcfunction(L, lf_obj_free); lua_setglobal(L, "obj_free");
-	lua_pushcfunction(L, lf_level_get); lua_getglobal(L, "level_get");
+	lua_pushcfunction(L, lf_level_get); lua_setglobal(L, "level_get");
 	lua_pushcfunction(L, lf_level_set); lua_setglobal(L, "level_set");
 
 	printf("Loading game.lua\n");
