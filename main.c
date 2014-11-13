@@ -8,6 +8,9 @@
 #include <math.h>
 
 #include <SDL.h>
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
 
 #include <mmintrin.h>
 #include <xmmintrin.h>
@@ -34,6 +37,7 @@ level *lvroot = NULL;
 #include "trace.h"
 #include "screen.h"
 #include "level.h"
+#include "script.h"
 
 int mainloop(void)
 {
@@ -43,8 +47,13 @@ int mainloop(void)
 	mat4 cam;
 	vec4 gravity;
 
+	// TODO: move this part to Lua
 	lvroot = level_load("level.txt");
 	level *lv = lvroot;
+
+	lua_State *L = script_newvm();
+	if(L == NULL)
+		return 1;
 
 	gravity.m = _mm_setzero_ps();
 	mat4_iden(&cam);
@@ -68,14 +77,15 @@ int mainloop(void)
 	float cangx = 0.0f;
 	float cangy = 0.0f;
 
-	int sph_count = 32;
-	part sph[sph_count];
+	int sph_count = 0;
+	part *sph[sph_count];
 	for(i = 0; i < sph_count; i++)
 	{
-		sph[i].typ = P_SPHERE;
-		sph[i].sph.r = 0.3f;
-		sph[i].sph.refl = 0.6f;
-		sph[i].sph.col.m = _mm_setr_ps(1.0f, 0.5f, 0.5f, 1.0f);
+		sph[i] = level_obj_new(lv);
+		sph[i]->typ = P_SPHERE;
+		sph[i]->sph.r = 0.3f;
+		sph[i]->sph.refl = 0.6f;
+		sph[i]->sph.col.m = _mm_setr_ps(1.0f, 0.5f, 0.5f, 1.0f);
 	}
 
 	for(;;)
@@ -84,13 +94,13 @@ int mainloop(void)
 
 		for(i = 0; i < sph_count; i++)
 		{
-			sph[i].sph.pos.m = _mm_setr_ps(
+			sph[i]->sph.pos.m = _mm_setr_ps(
 				2.0f+lv->sx + sinf(M_PI*(sec_current*0.2f + i*2/(float)sph_count))*3.7f,
 				0.3f + 0.1f + sinf(2.0f*M_PI*(sec_current*0.2f + i*10/(float)sph_count))*0.1f,
 				2.0f+lv->sz + cosf(M_PI*(sec_current*0.2f + i*2/(float)sph_count))*3.7f,
 				1.0f);
 
-			level_part_add(lv, &sph[i]);
+			//level_part_add(lv, sph[i]);
 		}
 		trace_screen_centred(lv, 0, 0, rwidth, rheight, &cam);
 		screen_upscale();
@@ -365,9 +375,12 @@ int main(int argc, char *argv[])
 
 	SDL_WM_SetCaption("7DFPS 2014 (fanzyflani's entry)", NULL);
 	screen = SDL_SetVideoMode(DEF_WIDTH, DEF_HEIGHT, 32, 0);
-	sbuf = malloc(sizeof(uint32_t)*rwidth*rheight);
-	tsbuf = malloc(sizeof(uint32_t)*rwidth*rheight);
-	zbuf = malloc(sizeof(float)*rwidth*rheight);
+	sbuf = malloc(sizeof(uint32_t)*rwidth*rheight + 16);
+	tsbuf = malloc(sizeof(uint32_t)*rwidth*rheight + 16);
+	zbuf = malloc(sizeof(float)*rwidth*rheight + 16);
+	sbuf += (((intptr_t)sbuf)&12)>>2;
+	tsbuf += (((intptr_t)sbuf)&12)>>2;
+	zbuf += (((intptr_t)sbuf)&12)>>2;
 
 	return mainloop();
 }

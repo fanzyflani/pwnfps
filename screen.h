@@ -30,6 +30,8 @@ static inline void trace_ray_prelude(level *lv, int cy, const vec4 *from, const 
 // [p1,p2)
 void trace_screen_centred(level *lv, int x1, int y1, int x2, int y2, const mat4 *cam)
 {
+	vec4 rayb, rdx, rdy;
+
 	assert(x1 < x2);
 	assert(y1 < y2);
 
@@ -44,7 +46,6 @@ void trace_screen_centred(level *lv, int x1, int y1, int x2, int y2, const mat4 
 	float ysrat = 2.0f * yrat / (float)dimy;
 
 	// Work out x, y stuff
-	vec4 rayb, rdx, rdy;
 	const vec4 *from = &cam->v.w;
 
 	rayb.m = _mm_add_ps(cam->v.z.m,
@@ -72,7 +73,7 @@ void trace_screen_centred(level *lv, int x1, int y1, int x2, int y2, const mat4 
 		// TODO: isolate this to the camera region
 		memcpy(tsbuf, sbuf, sizeof(uint32_t)*rwidth*rheight);
 
-	#pragma omp parallel for
+#pragma omp parallel for
 		for(cy = 0; cy < dimy; cy++)
 		{
 			int cx, x, y;

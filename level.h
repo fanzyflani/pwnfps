@@ -23,6 +23,7 @@ void level_part_add(level *lv, part *pt)
 	switch(pt->typ)
 	{
 		case P_SPHERE:
+			//printf("PART %f %f %f\n", pt->sph.pos.v.x, pt->sph.pos.v.y, pt->sph.pos.v.z);
 			level_part_add_bbox(lv, pt,
 				pt->sph.pos.v.x - pt->sph.r,
 				pt->sph.pos.v.z - pt->sph.r,
@@ -35,17 +36,72 @@ void level_part_add(level *lv, part *pt)
 			fflush(stdout);
 			abort();
 	}
+}
 
+part *level_obj_new(level *lv)
+{
+	int i;
+
+	// Find a gap
+	for(i = 0; i < lv->objs_num; i++)
+	if(lv->objs[i].typ == P_FREE)
+	{
+		lv->objs[i].typ = P_INVAL;
+		return &lv->objs[i];
+	}
+
+	// XXX MAKE SURE YOU CHECK THE RETURN VALUE OF THIS FUNCTION
+	if(lv->objs_num >= OBJ_MAX)
+		return NULL;
+
+	part *pt = &lv->objs[lv->objs_num++];
+	pt->typ = P_INVAL;
+	assert(lv->objs_num >= 0 && lv->objs_num <= OBJ_MAX);
+
+	return pt;
 }
 
 void level_prepare_render(level *lv)
 {
-	int x, z;
+	int x, z, i;
 
 	// Clear parts grid
 	for(z = 0; z < 64; z++)
 	for(x = 0; x < 64; x++)
 		lv->parts_num[z][x] = 0;
+	
+	// Add all parts in the objs list
+	//printf("derp %i\n", lv->objs_num);
+	assert(lv->objs_num >= 0 && lv->objs_num <= OBJ_MAX);
+
+	for(i = 0; i < lv->objs_num; i++)
+	if(lv->objs[i].typ != P_FREE)
+		level_part_add(lv, &lv->objs[i]);
+
+}
+
+level lvbase;
+
+level *level_new(void)
+{
+	int i;
+
+	//level *lv = malloc(sizeof(level));
+	level *lv = &lvbase;
+	memset(lv->data, '.', 64*64);
+	lv->objs_num = 0;
+
+	for(i = 0; i < 26; i++)
+	{
+		lv->pmap[i].x1 = lv->pmap[i].x2 = -1;
+		lv->pmap[i].c1 = ';';
+		lv->pmap[i].c2 = ';';
+	}
+
+	lv->sx = 0;
+	lv->sz = 0;
+
+	return lv;
 }
 
 level *level_load(const char *fname)
@@ -58,21 +114,7 @@ level *level_load(const char *fname)
 		return NULL;
 	}
 
-	char *tdata = malloc(64*64);
-	level *lv = malloc(sizeof(level));
-	memset(tdata, '.', 64*64);
-	lv->objs = NULL;
-	lv->objs_num = 0;
-
-	for(i = 0; i < 26; i++)
-	{
-		lv->pmap[i].x1 = lv->pmap[i].x2 = -1;
-		lv->pmap[i].c1 = ';';
-		lv->pmap[i].c2 = ';';
-	}
-
-	lv->sx = 0;
-	lv->sz = 0;
+	level *lv = level_new();
 	for(z = 0; z < 64; z++)
 	{
 		for(x = 0; x < 64; x++)
@@ -135,7 +177,7 @@ level *level_load(const char *fname)
 				}
 			}
 
-			tdata[x + z*64] = c;
+			lv->data[z][x] = c;
 		}
 	}
 
@@ -144,7 +186,6 @@ level *level_load(const char *fname)
 	for(z = 0; z < 64; z++)
 	for(x = 0; x < 64; x++)
 	{
-		lv->data[z][x] = tdata[x + z*64];
 		lv->parts[z][x] = NULL;
 		lv->parts_num[z][x] = 0;
 		lv->parts_max[z][x] = 0;
@@ -178,8 +219,6 @@ level *level_load(const char *fname)
 
 		printf("%c rot %i\n", i+'A', pm->rot12);
 	}
-
-	free(tdata);
 
 	fclose(fp);
 

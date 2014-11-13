@@ -256,17 +256,6 @@ static __m128 trace_ray(int hitctr, uint32_t *seed, level *lv, float *dist, cons
 
 			// TODO: handle stuff other than spheres
 
-			/*
-			pt->typ = P_SPHERE;
-			pt->sph.r = 0.3f;
-			//sph_rpos.m = _mm_setr_ps(8.5f, 0.3f, 7.0f, 1.0f);
-			//sph_rpos.m = _mm_setr_ps(fmodf(0.5f + sec_current/2.0f, 1.0f), 0.3f, 0.5f, 1.0f);
-			pt->sph.pos.m = _mm_setr_ps(0.5f, 0.8f, 0.5f, 1.0f);
-			pt->sph.pos.v.x += (float)cx;
-			pt->sph.pos.v.z += (float)cz;
-			pt->sph.col.m = _mm_setr_ps(0.8f, 1.0f, 0.8f, 1.0f);
-			*/
-
 			float sph_rad2 = pt->sph.r * pt->sph.r;
 			float sph_dist = -1.0f;
 

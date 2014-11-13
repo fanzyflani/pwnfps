@@ -1,5 +1,8 @@
 #define EPSILON 0.0000000000001f
 
+// yes you have enough RAM
+#define OBJ_MAX 10000
+
 #define REFLECT_BLUR 0.03f
 #define PLAYER_BBOX 0.2f
 #define REFLECT 2
@@ -38,7 +41,7 @@ typedef union vec4_s
 	struct { float s, t, r, q; } t;
 	__m128 m;
 	__m128i mi;
-} vec4;
+} __attribute__((aligned(16))) vec4;
 
 typedef union mat4_s
 {
@@ -51,6 +54,7 @@ typedef union mat4_s
 typedef enum part_typ_e
 {
 	P_INVAL = 0,
+	P_FREE,
 
 	P_SPHERE,
 
@@ -78,7 +82,7 @@ union part_s
 		part_typ typ;
 		part *a, *b;
 	} csg;
-};
+} __attribute__((aligned(16)));
 
 typedef struct portal_s
 {
@@ -91,6 +95,9 @@ typedef struct portal_s
 
 typedef struct level_s
 {
+	part objs[OBJ_MAX];
+	ssize_t objs_num;
+
 	int sx, sz;
 
 	portal pmap[26];
@@ -101,7 +108,5 @@ typedef struct level_s
 	uint16_t parts_num[64][64];
 	uint16_t parts_max[64][64];
 
-	part **objs;
-	uint16_t objs_num;
 } level;
 
