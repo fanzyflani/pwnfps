@@ -1,6 +1,7 @@
-(pwnfps engine - game needs a title right now)
+pwnfps engine
 raytraced portal engine for maximum euclidfuckery
 2014, @fanzyflani
+incomplete 7dfps release
 
 to build
 
