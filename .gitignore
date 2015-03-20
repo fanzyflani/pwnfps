@@ -1,6 +1,7 @@
 # final binaries
 pwnfps
 pwnfps.exe
+/build/
 
 # libs
 *.dll
