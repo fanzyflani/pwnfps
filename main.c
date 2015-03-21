@@ -50,6 +50,8 @@ int mainloop(void)
 	// TODO: move this part to Lua
 	lvroot = level_load("level.txt");
 	level *lv = lvroot;
+	if(lv == NULL)
+		return 1;
 
 	lua_State *L = script_newvm();
 	if(L == NULL)
