@@ -76,8 +76,8 @@ int mainloop(void)
 	int k_moveleft = 0;
 	int k_moveright = 0;
 
-	//float cangx = 0.0f;
-	//float cangy = 0.0f;
+	float cangx = 0.0f;
+	float cangy = 0.0f;
 
 	int sph_count = 0;
 	part *sph[sph_count];
@@ -214,14 +214,14 @@ int mainloop(void)
 
 		// Perform pushbacks
 		int gx1 = (vel.v.x < 0.0f ? -1 : 1);
-		//int gy1 = (vel.v.y < 0.0f ? -1 : 1);
+		int gy1 = (vel.v.y < 0.0f ? -1 : 1);
 		int gz1 = (vel.v.z < 0.0f ? -1 : 1);
 		float bx1 = px1 + gx1*PLAYER_BBOX;
-		//float by1 = py1 + gy1*PLAYER_BBOX;
+		float by1 = py1 + gy1*PLAYER_BBOX;
 		float bz1 = pz1 + gz1*PLAYER_BBOX;
 
 		int bcx = (int)bx1;
-		//int bcy = (int)by1;
+		int bcy = (int)by1;
 		int bcz = (int)bz1;
 		char oldcell = get_cell(lv, cx1, cz1);
 
