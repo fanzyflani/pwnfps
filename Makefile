@@ -9,8 +9,8 @@ pwnfps_LIBS   = -lm `sdl-config --libs` `pkg-config lua5.1 --libs`
 all: pwnfps
 
 pwnfps:
-	$(CC) $(pwnfps_CFLAGS) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o build/$@ main.c $(pwnfps_LIBS)
 	mkdir -p build
+	$(CC) $(pwnfps_CFLAGS) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -o build/$@ main.c $(pwnfps_LIBS)
 	cp -f game.lua level.txt build
 
 clean:
