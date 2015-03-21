@@ -59,7 +59,9 @@ void trace_screen_centred(level *lv, int x1, int y1, int x2, int y2, const mat4 
 	// Trace!
 	// Do 32x32 tiles for improved cache coherence
 	int cy;
-//#pragma omp parallel for
+#if !(defined(__GNUC__))
+  #pragma omp parallel for
+#endif
 	for(cy = 0; cy < dimy; cy += 32)
 	{
 		trace_ray_prelude(lv, cy, from, &rayb, &rdx, &rdy, dimx, dimy);
@@ -73,7 +75,9 @@ void trace_screen_centred(level *lv, int x1, int y1, int x2, int y2, const mat4 
 		// TODO: isolate this to the camera region
 		memcpy(tsbuf, sbuf, sizeof(uint32_t)*rwidth*rheight);
 
-//#pragma omp parallel for
+#if !(defined(__GNUC__))
+  #pragma omp parallel for
+#endif
 		for(cy = 0; cy < dimy; cy++)
 		{
 			int cx, x, y;
