@@ -59,6 +59,7 @@ void trace_screen_centred(level *lv, int x1, int y1, int x2, int y2, const mat4 
 	// Trace!
 	// Do 32x32 tiles for improved cache coherence
 	int cy;
+
 #pragma omp parallel for
 	for(cy = 0; cy < dimy; cy += 32)
 	{
